@@ -1,0 +1,27 @@
+{
+  "name": "empire-of-the-soil",
+  "productName": "Empire of the Soil",
+  "version": "1.0.0",
+  "description": "A turn-based grand strategy game of ant colonies.",
+  "main": "electron-main.js",
+  "author": "James Higson",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable --x64",
+    "build-installer": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "com.empireofthesoil.game",
+    "productName": "Empire of the Soil",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["index.html", "js/**/*", "build/icon.png", "electron-main.js"],
+    "win": { "icon": "build/icon.png" },
+    "portable": { "artifactName": "EmpireOfTheSoil.exe" },
+    "nsis": { "artifactName": "EmpireOfTheSoil-Setup.exe", "oneClick": false, "allowToChangeInstallationDirectory": true }
+  }
+}

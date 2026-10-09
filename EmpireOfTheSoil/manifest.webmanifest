@@ -1,0 +1,16 @@
+{
+  "name": "Empire of the Soil",
+  "short_name": "Ant Empire",
+  "description": "A turn-based grand strategy game of ant colonies.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b0705",
+  "theme_color": "#0b0705",
+  "icons": [
+    { "src": "build/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "build/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "build/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
