@@ -357,3 +357,23 @@ function drawIcon(ctx, kind, x, y, s = 16) {
   }
   ctx.restore();
 }
+
+// small gold crown marking a swarm that carries mated queens
+function drawCrown(ctx, x, y, s, n) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.5, s * 0.3); ctx.lineTo(-s * 0.5, -s * 0.15); ctx.lineTo(-s * 0.25, s * 0.05); ctx.lineTo(0, -s * 0.35);
+  ctx.lineTo(s * 0.25, s * 0.05); ctx.lineTo(s * 0.5, -s * 0.15); ctx.lineTo(s * 0.5, s * 0.3); ctx.closePath();
+  const g = ctx.createLinearGradient(0, -s * 0.35, 0, s * 0.3);
+  g.addColorStop(0, '#fff2a8'); g.addColorStop(1, '#c98a1c');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = 'rgba(40,24,6,0.9)'; ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.fillStyle = '#e0503f';
+  ctx.beginPath(); ctx.arc(0, s * 0.12, s * 0.08, 0, 6.28); ctx.fill();
+  ctx.restore();
+  if (n > 1) {
+    ctx.font = `bold ${Math.round(s * 0.6)}px sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#000'; ctx.fillText('x' + n, x + s * 0.6 + 1, y + 1); ctx.fillStyle = '#ffe9a0'; ctx.fillText('x' + n, x + s * 0.6, y);
+  }
+}

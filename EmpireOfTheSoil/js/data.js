@@ -144,28 +144,30 @@ function speciesMods(key) {
 //  Nest chambers
 // ---------------------------------------------------------------------
 const CHAMBERS = {
-  royal:     { name: 'Royal Chamber',     base: 25, time: 2, req: null, values: [8, 13, 20, 30, 44],
+  royal:     { name: 'Royal Chamber',     base: 25, time: 2, req: null, values: [8, 14, 24, 40, 65, 110, 200, 360],
                desc: 'Home of the queen. Each level increases how many eggs she can lay per turn.', fmt: v => `${v} eggs / turn` },
-  nursery:   { name: 'Brood Nursery',     base: 15, time: 1, req: null, values: [30, 70, 140, 250, 400],
+  nursery:   { name: 'Brood Nursery',     base: 15, time: 1, req: null, values: [30, 70, 140, 250, 400, 800, 1500, 2800],
                desc: 'Warm, humid galleries where eggs, larvae and pupae are raised. Sets brood capacity.', fmt: v => `${v} brood capacity` },
-  galleries: { name: 'Worker Galleries',  base: 18, time: 2, req: null, values: [40, 110, 250, 500, 900],
+  galleries: { name: 'Worker Galleries',  base: 18, time: 2, req: null, values: [40, 110, 250, 500, 900, 2200, 5000, 10000],
                desc: 'Resting halls for the adult workforce. Sets population capacity.', fmt: v => `+${v} population cap` },
-  granary:   { name: 'Granary',           base: 15, time: 1, req: null, values: [200, 450, 900, 1600, 2600],
+  granary:   { name: 'Granary',           base: 15, time: 1, req: null, values: [200, 450, 900, 1600, 2600, 4800, 8500, 15000],
                desc: 'Dry chambers for seeds, prey and honeydew. Raises food storage (base 80).', fmt: v => `${v} food storage` },
-  barracks:  { name: 'Soldier Barracks',  base: 25, time: 2, req: null, values: [30, 80, 180, 350, 600],
+  barracks:  { name: 'Soldier Barracks',  base: 25, time: 2, req: null, values: [30, 80, 180, 350, 600, 1400, 3200, 6500],
                desc: 'Quarters for the military castes. Extra population cap and +10% garrison defence per level.', fmt: v => `+${v} pop cap` },
-  archive:   { name: 'Pheromone Archive', base: 30, time: 2, req: null, values: [1.3, 1.6, 1.9, 2.2, 2.6],
+  archive:   { name: 'Pheromone Archive', base: 30, time: 2, req: null, values: [1.3, 1.6, 1.9, 2.2, 2.6, 3.0, 3.5, 4.0],
                desc: 'Chemical libraries where scent signals are refined. Multiplies research.', fmt: v => `x${v} research` },
-  fungus:    { name: 'Fungus Garden',     base: 30, time: 2, req: 'fungiculture', values: [8, 18, 32, 50, 75],
+  fungus:    { name: 'Fungus Garden',     base: 30, time: 2, req: 'fungiculture', values: [8, 18, 32, 50, 75, 130, 220, 380],
                desc: 'A spongy garden of cultivated Leucoagaricus fungus, fed with leaf mulch. Produces food but consumes materials.', fmt: v => `+${v} food / turn` },
-  aphids:    { name: 'Aphid Pasture',     base: 25, time: 2, req: 'aphid_husbandry', values: [5, 11, 19, 29, 42],
+  aphids:    { name: 'Aphid Pasture',     base: 25, time: 2, req: 'aphid_husbandry', values: [5, 11, 19, 29, 42, 70, 120, 200],
                desc: 'Root aphids herded underground and milked for honeydew. Steady food, boosts trade.', fmt: v => `+${v} food / turn` },
-  midden:    { name: 'Refuse Midden',     base: 12, time: 1, req: null, values: [0.6, 1.2, 1.8, 2.4, 3.0],
+  midden:    { name: 'Refuse Midden',     base: 12, time: 1, req: null, values: [0.6, 1.2, 1.8, 2.4, 3.0, 3.2, 3.4, 3.6],
                desc: 'A sealed waste chamber that keeps disease and parasites out of the nest. Lowers mortality.', fmt: v => `-${v}% mortality` },
-  gates:     { name: 'Fortified Gates',   base: 20, time: 1, req: null, values: [0.2, 0.4, 0.6, 0.8, 1.0],
+  gates:     { name: 'Fortified Gates',   base: 20, time: 1, req: null, values: [0.2, 0.4, 0.6, 0.8, 1.0, 1.25, 1.5, 1.8],
                desc: 'Narrow, pebble-lined entrances that soldiers can hold against any army.', fmt: v => `+${Math.round(v * 100)}% nest defence` },
 };
 const CHAMBER_KEYS = Object.keys(CHAMBERS);
+const CHAMBER_MAX = 8;
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI'];
 function chamberCost(key, toLevel) { return Math.round(CHAMBERS[key].base * Math.pow(toLevel, 1.7)); }
 function chamberTime(key, toLevel) { return CHAMBERS[key].time + Math.floor(toLevel / 2); }
 
@@ -200,10 +202,11 @@ const TECHS = {
   satellite:       { name: 'Satellite Nests',    branch: 'nest', tier: 1, cost: 70,  req: ['ventilation'], desc: 'Polydomy - one colony, many nests. +2 outpost limit.' },
   fortification:   { name: 'Fortification',      branch: 'nest', tier: 2, cost: 100, req: ['ventilation'], desc: 'Hardened walls and false tunnels. +25% nest and outpost defence.' },
   parallel_dig:    { name: 'Parallel Excavation', branch: 'nest', tier: 2, cost: 120, req: ['deep_excavation'], desc: 'Two excavation crews work at once. Build two chambers simultaneously.' },
+  metropolis:      { name: 'Subterranean Metropolis', branch: 'nest', tier: 3, cost: 260, req: ['parallel_dig'], desc: 'Vast multi-storey nests reaching metres underground. Chambers can reach levels 6, 7 and 8, and a third excavation crew joins the work.' },
   // Society
   chem_diplomacy:  { name: 'Chemical Diplomacy', branch: 'society', tier: 0, cost: 45,  req: [], desc: 'Appeasement pheromones calm rivals. +50% trade income, rivals warm to you faster.' },
   polygyny:        { name: 'Polygyny',           branch: 'society', tier: 1, cost: 130, req: [], desc: 'Accept multiple queens. +40% egg laying, and a daughter queen can take over if the home nest falls.' },
-  nuptial:         { name: 'Nuptial Flights',    branch: 'society', tier: 2, cost: 160, req: ['polygyny'], desc: 'Winged alates found daughter colonies. +2 outpost limit and outposts claim wider territory.' },
+  nuptial:         { name: 'Mass Nuptial Flights', branch: 'society', tier: 2, cost: 160, req: ['polygyny'], desc: 'Synchronised flights with thousands of alates. +1 mated queen per flight, more queens survive the birds, flights are possible in autumn too, and outposts claim wider territory.' },
   supercolony:     { name: 'Supercolony',        branch: 'society', tier: 3, cost: 420, req: ['nuptial', 'trophallaxis', 'fortification'], desc: 'Nests across the land recognise one another as kin. +15% to everything, +3 outposts.' },
 };
 for (const k in TECHS) TECHS[k].cost = Math.round(TECHS[k].cost * (1.6 + TECHS[k].tier * 0.3) / 5) * 5;

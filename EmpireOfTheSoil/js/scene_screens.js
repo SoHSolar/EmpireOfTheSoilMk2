@@ -36,7 +36,7 @@ class ResearchScene {
   onKey(e) { if (e.key === 'Escape' || e.key.toLowerCase() === 'r') App.toMap(); if (e.key.toLowerCase() === 'c') App.setScene(new ColonyScene()); }
   draw(ctx, dt) {
     this.t += dt;
-    const st = App.st, c = playerCol(st), inc = projectIncome(st, c);
+    const st = App.st, c = playerRoot(st), inc = { rp: playerColonies(st).reduce((a, q) => a + projectIncome(st, q).rp, 0) };
     screenHeader(ctx, 'Research', `${fmt(c.rp)} research banked  •  +${fmt(inc.rp)} per turn (assign workers to Research, dig a Pheromone Archive)`);
     BRANCHES.forEach((b, bi) => {
       const x = 24 + bi * 312;
@@ -100,8 +100,8 @@ class DiplomacyScene {
   onKey(e) { if (e.key === 'Escape' || e.key.toLowerCase() === 'p') App.toMap(); }
   draw(ctx, dt) {
     this.t += dt;
-    const st = App.st, p = playerCol(st);
-    const known = st.colonies.filter(c => c !== p && p.met[c.id]);
+    const st = App.st, p = playerRoot(st), act = playerCol(st);
+    const known = st.colonies.filter(c => !isMine(st, c.id) && isRoot(c) && p.met[c.id]);
     screenHeader(ctx, 'Diplomacy', `Trade routes: ${routeCount(st, p.id)} / ${cstats(st, p).maxRoutes}`);
     if (!known.length) {
       panel(ctx, W / 2 - 300, 200, 600, 160);
@@ -152,10 +152,11 @@ class DiplomacyScene {
     line('Status', war ? 'AT WAR' : routeBetween(st, p.id, c.id) ? 'Peace, trading' : 'Peace', war ? COL.bad : COL.good);
     const mood = r.score > 50 ? 'Friendly' : r.score > 15 ? 'Cordial' : r.score > -15 ? 'Wary' : r.score > -45 ? 'Hostile' : 'Bitter enemies';
     line('Opinion of you', `${Math.round(r.score)} (${mood})`, r.score > 15 ? COL.good : r.score < -15 ? COL.bad : COL.gold);
-    const ratio = militaryPower(st, c) / Math.max(1, militaryPower(st, p));
+    const ratio = factionPower(st, c.id) / Math.max(1, factionPower(st, p.id));
     line('Military strength', ratio > 1.6 ? 'Far stronger than you' : ratio > 1.15 ? 'Stronger than you' : ratio > 0.85 ? 'Evenly matched' : ratio > 0.5 ? 'Weaker than you' : 'Far weaker than you', ratio > 1.15 ? COL.bad : ratio < 0.85 ? COL.good : COL.gold);
-    line('Territory', `${c._tiles} tiles, ${c.outposts.length} outposts`);
-    const wars = st.colonies.filter(o => o.alive && o !== c && atWar(st, c.id, o.id) && (o === p || p.met[o.id])).map(o => o.name);
+    const fm = facMembers(st, c.id);
+    line('Territory', `${fm.reduce((a, q) => a + (q._tiles || 0), 0)} tiles, ${fm.reduce((a, q) => a + q.outposts.length, 0)} outposts${fm.length > 1 ? `, ${fm.length - 1} sister colonies` : ''}`);
+    const wars = st.colonies.filter(o => o.alive && isRoot(o) && o !== c && atWar(st, c.id, o.id) && (o === p || p.met[o.id])).map(o => o === p ? 'you' : o.name);
     line('At war with', wars.length ? wars.join(', ') : 'nobody you know');
     wrap(ctx, SPECIES[c.species].desc, x + 18, 290, w - 36, 19, { font: `14px ${FONT_BODY}`, color: '#d8ccb0' });
     text(ctx, 'Known traits: ' + SPECIES[c.species].strengths.join('; '), x + 18, 380, { font: `12px ${FONT_BODY}`, color: '#b8d0a0' });
@@ -180,8 +181,8 @@ class DiplomacyScene {
       const inc = routeIncome(st, route, p.id);
       text(ctx, `Trade income: +${fmt(inc.food)} food, +${fmt(inc.rp)} research per turn${route.blocked ? ' (CUT by an enemy swarm!)' : ''}`, x + 18, ay + 82, { font: `13px ${FONT_BODY}`, color: route.blocked ? COL.bad : COL.good });
     }
-    button(ctx, x + 18, ay + 110, 160, 36, 'Gift 25 food', () => { this.msg = giftFood(st, c.id, 25) ? { ok: true, msg: `${c.name} accepts the food gratefully.` } : { ok: false, msg: 'Not enough food.' }; }, { disabled: p.food < 25 || war });
-    button(ctx, x + 188, ay + 110, 160, 36, 'Gift 100 food', () => { this.msg = giftFood(st, c.id, 100) ? { ok: true, msg: `${c.name} is impressed by your generosity.` } : { ok: false, msg: 'Not enough food.' }; }, { disabled: p.food < 100 || war });
+    button(ctx, x + 18, ay + 110, 160, 36, 'Gift 25 food', () => { this.msg = giftFood(st, c.id, 25) ? { ok: true, msg: `${c.name} accepts the food gratefully.` } : { ok: false, msg: 'Not enough food.' }; }, { disabled: act.food < 25 || war });
+    button(ctx, x + 188, ay + 110, 160, 36, 'Gift 100 food', () => { this.msg = giftFood(st, c.id, 100) ? { ok: true, msg: `${c.name} is impressed by your generosity.` } : { ok: false, msg: 'Not enough food.' }; }, { disabled: act.food < 100 || war });
     button(ctx, x + 358, ay + 110, 152, 36, 'Show on map', () => { App.toMap(); App.mapScene.centerOn(c.nest.x, c.nest.y); App.mapScene.sel = { type: 'site', x: c.nest.x, y: c.nest.y }; }, { disabled: !st.explored[idx(st, c.nest.x, c.nest.y)] });
     if (this.msg) text(ctx, this.msg.msg, x + 18, ay + 166, { font: `bold 14px ${FONT_BODY}`, color: this.msg.ok ? COL.good : COL.bad });
     if (this.confirm) this.confirm.draw(ctx);
@@ -194,7 +195,7 @@ class GameOverScene {
   enter() { Sound.music(this.res.win ? 'victory' : 'defeat'); Sound.ambience('none'); Sound.sfx(this.res.win ? 'victory' : 'defeat'); }
   draw(ctx, dt) {
     this.t += dt;
-    const st = App.st, p = playerCol(st);
+    const st = App.st, p = playerRoot(st);
     const bg = ctx.createRadialGradient(W / 2, H / 2, 50, W / 2, H / 2, 700);
     bg.addColorStop(0, this.res.win ? '#4a3612' : '#3a120c'); bg.addColorStop(1, '#0b0705');
     ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);

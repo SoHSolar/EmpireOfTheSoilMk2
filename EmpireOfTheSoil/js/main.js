@@ -257,7 +257,7 @@ const App = {
   },
   save(slot) {
     try {
-      const st = this.st, p = playerCol(st);
+      const st = this.st, p = playerRoot(st);
       localStorage.setItem(this.saveKey(slot), serialize(st));
       localStorage.setItem(this.saveKey(slot) + '_meta', JSON.stringify({ name: p.name, species: p.species, turn: st.turn, date: dateStr(st.turn), size: MAP_SIZES[st.sizeKey].name, saved: new Date().toLocaleString() }));
       return true;

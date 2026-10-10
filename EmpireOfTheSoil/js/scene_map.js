@@ -128,7 +128,7 @@ class MapScene {
     Sound.sfx('step');
     this.disp.set(sw.id, { fx: from[0], fy: from[1], t: 0 });
     if (r.merged) { this.sel = { type: 'swarm', id: r.merged.id }; this.anim = null; this.afterMove(); return; }
-    if (r.battle) { sw.path = []; this.anim = null; this.afterMove(); return; }
+    if (r.battle) { sw.path = []; sw.chase = null; if (r.engaged) App.toast('Contact! The enemy swarm is brought to battle.', '#ff9a7a'); this.anim = null; this.afterMove(); return; }
     recompute(st); this.buildOverlays();
     if (sw.mp <= 0.001) { this.anim = null; this.afterMove(); }
   }
@@ -138,22 +138,23 @@ class MapScene {
     const st = App.st;
     if (this.anim) return;
     if (sw.x === tx && sw.y === ty) return;
-    const p = playerCol(st);
+    const p = colById(st, sw.owner);
     // peaceful target?
     const site = siteAt(st, tx, ty);
-    const foe = site && site.col !== p ? site.col : (swarmsAt(st, tx, ty).find(s => s.owner !== p.id) ? colById(st, swarmsAt(st, tx, ty).find(s => s.owner !== p.id).owner) : null);
+    const tSwarm = swarmsAt(st, tx, ty).find(s => !isMine(st, s.owner));
+    const foe = site && !isMine(st, site.col.id) ? site.col : (tSwarm ? colById(st, tSwarm.owner) : null);
     if (foe && !atWar(st, p.id, foe.id)) {
-      if (!site && swarmsAt(st, tx, ty).every(s => s.owner === p.id || !atWar(st, p.id, s.owner))) {
-        // peaceful swarm in the way - only ask if the user explicitly targets it
-      }
-      this.dialog = new ConfirmDialog(`Attack ${foe.name}?`, `Attacking the ${foe.name} colony (${SPECIES[foe.species].name}) will declare war on them. Their opinion of you: ${Math.round(foe.rel[p.id].score)}.`, 'Declare War', () => {
-        declareWar(st, p.id, foe.id); Sound.sfx('war'); this.dialog = null; this.orderMove(sw, tx, ty);
+      const R0 = facRoot(st, foe.id), rel = relOf(st, foe.id, st.playerId);
+      this.dialog = new ConfirmDialog(`Attack ${R0.name}?`, `Attacking the ${R0.name} colony (${SPECIES[foe.species].name}) will declare war on them${facMembers(st, foe.id).length > 1 ? ' and all their sister colonies' : ''}. Their opinion of you: ${Math.round(rel ? rel.score : 0)}.`, 'Declare War', () => {
+        declareWar(st, st.playerId, foe.id); Sound.sfx('war'); this.dialog = null; this.orderMove(sw, tx, ty);
       }, () => this.dialog = null, true);
       return;
     }
     const path = findPath(st, sw.x, sw.y, tx, ty, p);
     if (!path) { App.toast('No route there.', COL.bad); return; }
     sw.path = path;
+    sw.chase = tSwarm && atWar(st, sw.owner, tSwarm.owner) ? tSwarm.id : null;
+    if (sw.chase) App.toast('Pursuing - your swarm will keep chasing this enemy each turn until it is caught.');
     if (sw.mp > 0) this.anim = { id: sw.id, t: 1 };
   }
 
@@ -182,7 +183,7 @@ class MapScene {
     const [tx, ty] = this.tileAt(x, y);
     if (!inMap(st, tx, ty)) return;
     const vis = st.visible[idx(st, tx, ty)], exp = st.explored[idx(st, tx, ty)];
-    const own = swarmsAt(st, tx, ty).filter(s => s.owner === p.id);
+    const own = swarmsAt(st, tx, ty).filter(s => isMine(st, s.owner));
     const sw = this.selectedSwarm();
     if (own.length) {
       // cycle through own swarms on that tile
@@ -191,8 +192,8 @@ class MapScene {
       this.sel = { type: 'swarm', id: own[(i + 1) % own.length].id }; this.pathCache = null; this.pendingTap = null; return;
     }
     const site = exp ? siteAt(st, tx, ty) : null;
-    const foeSwarm = vis ? swarmsAt(st, tx, ty).find(s => s.owner !== p.id) : null;
-    if (sw && (!site || site.col !== p) ) { this.tapOrder(sw, tx, ty); return; }
+    const foeSwarm = vis ? swarmsAt(st, tx, ty).find(s => !isMine(st, s.owner)) : null;
+    if (sw && (!site || !isMine(st, site.col.id))) { this.tapOrder(sw, tx, ty); return; }
     this.pendingTap = null;
     if (site) { this.sel = { type: 'site', x: tx, y: ty }; return; }
     if (foeSwarm) { this.sel = { type: 'enemy', id: foeSwarm.id }; return; }
@@ -242,15 +243,32 @@ class MapScene {
     else if (k === 'p' || k === 'g') App.setScene(new DiplomacyScene());
     else if (k === 'n' || k === 'tab') this.nextSwarm();
     else if (k === 'h') { const p = playerCol(st); this.centerOn(p.nest.x, p.nest.y); }
+    else if (k === '[' || k === ']') this.cycleColony(k === ']' ? 1 : -1);
     else if (k === '+' || k === '=') this.onWheel(W / 2, H / 2, -1);
     else if (k === '-') this.onWheel(W / 2, H / 2, 1);
     else if (k === 'f5') { e.preventDefault?.(); if (App.save('1')) App.toast('Quick-saved to slot 1'); }
   }
   openMenu() { this.dialog = new GameMenu(this); }
+  doFlight(c) {
+    const st = App.st, r = nuptialFlight(st, c);
+    if (r.err) { App.toast(r.err, COL.bad); return; }
+    Sound.sfx('march');
+    recompute(st); this.buildOverlays();
+    if (r.swarms.length) { this.sel = { type: 'swarm', id: r.swarms[0].id }; this.centerOn(c.nest.x, c.nest.y); }
+    popup(st, { title: 'Nuptial Flight', kind: 'event', col: '#ffd27a', text: `On a warm, humid afternoon the nest of ${c.name} boils with winged ants. Princesses and males rise into the sky and mate on the wing.\n\n${r.swarms.length} mated queen${r.swarms.length > 1 ? 's have' : ' has'} landed with an escort of workers${r.lost ? ` (${r.lost} were snapped up by swifts)` : ''}. Each crowned swarm can found a new sister colony at least 6 tiles from any nest. Keep them safe - young queens in the open are easy prey.` });
+  }
+  cycleColony(d) {
+    const st = App.st, list = playerColonies(st);
+    if (list.length < 2) return;
+    const i = list.indexOf(playerCol(st));
+    const c = list[(i + d + list.length) % list.length];
+    st.activeId = c.id; this.sel = { type: 'site', x: c.nest.x, y: c.nest.y }; this.centerOn(c.nest.x, c.nest.y);
+    Sound.sfx('tab');
+  }
   endTurnClick() { if (!this.processing && !this.anim && !App.st.popups.length && !this.dialog) this.processing = 1; }
   nextSwarm() {
     const st = App.st;
-    const list = st.swarms.filter(s => s.owner === st.playerId);
+    const list = st.swarms.filter(s => isMine(st, s.owner));
     if (!list.length) { App.toast('You have no swarms. Muster one from your nest.'); return; }
     const ready = list.filter(s => s.mp > 0 && !s.path.length);
     const pool = ready.length ? ready : list;
@@ -310,6 +328,7 @@ class MapScene {
     }
     // season tint
     ctx.fillStyle = season(st.turn).tint; ctx.fillRect(0, 0, W, H);
+    for (const sw of st.swarms) this.drawZoc(ctx, sw, ts);
     this.drawSelection(ctx, ts);
   }
 
@@ -479,7 +498,7 @@ class MapScene {
     const st = App.st;
     const stackIdx = {};
     for (const sw of st.swarms) {
-      const vis = sw.owner === st.playerId || st.visible[idx(st, sw.x, sw.y)];
+      const vis = isMine(st, sw.owner) || st.visible[idx(st, sw.x, sw.y)];
       if (!vis) continue;
       const c = colById(st, sw.owner);
       const key = sw.x + ',' + sw.y; const si = stackIdx[key] = (stackIdx[key] ?? -1) + 1;
@@ -512,15 +531,40 @@ class MapScene {
       roundRect(ctx, sx - bw / 2, sy + ts * 0.32, bw, 15, 7);
       ctx.fillStyle = 'rgba(12,8,5,0.85)'; ctx.fill(); ctx.strokeStyle = c.color; ctx.lineWidth = 1; ctx.stroke();
       text(ctx, bt, sx, sy + ts * 0.32 + 7.5, { font: ctx.font, align: 'center', base: 'middle', color: '#fff', shadow: false });
-      if (sw.owner === st.playerId && sw.mp > 0 && !sw.path.length) {
+      if (isMine(st, sw.owner) && sw.mp > 0 && !sw.path.length) {
         ctx.fillStyle = '#9fe07a'; ctx.beginPath(); ctx.arc(sx + bw / 2 + 4, sy + ts * 0.32 + 7.5, 3, 0, 6.28); ctx.fill();
       }
-      if (sw.owner !== st.playerId && atWar(st, st.playerId, sw.owner)) {
+      if (sw.queens) drawCrown(ctx, sx, sy - ts * 0.42, Math.max(10, ts * 0.32), sw.queens);
+      if (!isMine(st, sw.owner) && atWar(st, st.playerId, sw.owner)) {
         text(ctx, '⚔', sx - bw / 2 - 10, sy + ts * 0.32, { font: `bold 12px ${FONT_BODY}`, color: '#ff7a5c' });
       }
     }
   }
 
+  // area of influence: hostile swarms in red, the selected swarm in gold
+  drawZoc(ctx, sw, ts) {
+    const st = App.st, sel = this.selectedSwarm();
+    const hostile = !isMine(st, sw.owner) && atWar(st, st.playerId, sw.owner);
+    if (!hostile && sw !== sel) return;
+    if (hostile && !st.visible[idx(st, sw.x, sw.y)]) return;
+    const [sx, sy] = this.swarmDisplayPos(sw, ts, 0), r = (zocR(st, sw) + 0.5) * ts;
+    ctx.save();
+    ctx.fillStyle = hostile ? 'rgba(255,90,60,0.09)' : 'rgba(242,193,78,0.07)';
+    ctx.strokeStyle = hostile ? 'rgba(255,110,80,0.9)' : 'rgba(242,193,78,0.8)';
+    ctx.lineWidth = 2.5; ctx.setLineDash([7, 6]); ctx.lineDashOffset = -this.t * 8;
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, 6.28); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+  // index of the first path step that enters an enemy's area of influence (a battle), or -1
+  engageIndex(sw, path) {
+    const st = App.st;
+    for (let i = 0; i < path.length; i++) {
+      const [x, y] = path[i];
+      if (zocThreats(st, sw.owner, x, y, sw).some(h => st.visible[idx(st, h.x, h.y)])) return i;
+      if (swarmsAt(st, x, y).some(h => atWar(st, sw.owner, h.owner))) return i;
+    }
+    return -1;
+  }
   drawPathPreview(ctx, ts) {
     const st = App.st, sw = this.selectedSwarm();
     if (!sw) return;
@@ -536,11 +580,12 @@ class MapScene {
       }
     }
     if (!path || !path.length) return;
-    const c = playerCol(st);
+    const c = colById(st, sw.owner);
     let mp = sw.mp, turn = 0, px = sw.x, py = sw.y;
     const full = swarmMaxMP(st, sw);
+    const eng = this.engageIndex(sw, path), last = eng >= 0 ? eng : path.length - 1;
     ctx.save();
-    for (let i = 0; i < path.length; i++) {
+    for (let i = 0; i <= last; i++) {
       const [x, y] = path[i];
       const cost = moveCostStep(st, px, py, x, y, c);
       if (mp + 1e-6 < cost && !(mp >= full - 1e-6)) { turn++; mp = full; }
@@ -550,11 +595,11 @@ class MapScene {
       ctx.globalAlpha = ghost ? 0.85 : 0.6;
       ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.beginPath(); ctx.arc(sx + 1, sy + 1, Math.max(2.5, ts * 0.09), 0, 6.28); ctx.fill();
       ctx.fillStyle = col; ctx.beginPath(); ctx.arc(sx, sy, Math.max(2, ts * 0.08), 0, 6.28); ctx.fill();
-      if (i === path.length - 1) {
+      if (i === last) {
         ctx.globalAlpha = 1;
-        ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx, sy, ts * 0.35, 0, 6.28); ctx.stroke();
-        const site = siteAt(st, x, y), foe = swarmsAt(st, x, y).find(s => s.owner !== st.playerId);
-        let label = (site && site.col !== c) || foe ? '⚔ Attack' : turn ? `${turn + 1} turns` : '';
+        ctx.strokeStyle = eng >= 0 ? '#ff7a5c' : col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx, sy, ts * 0.35, 0, 6.28); ctx.stroke();
+        const site = siteAt(st, x, y), foe = swarmsAt(st, x, y).find(s => !isMine(st, s.owner));
+        let label = eng >= 0 ? `⚔ Battle${turn ? ` in ${turn + 1} turns` : '!'}` : (site && !isMine(st, site.col.id)) || foe ? '⚔ Attack' : turn ? `${turn + 1} turns` : '';
         if (this.pendingTap && this.pendingTap[0] === x && this.pendingTap[1] === y) label = (label ? label + ' - ' : '') + 'tap again to confirm';
         if (label) text(ctx, label, sx, sy - ts * 0.6, { font: `bold 12px ${FONT_BODY}`, align: 'center', color: col });
       }
@@ -616,20 +661,22 @@ class MapScene {
     res('food', `${fmt(p.food)} / ${fmt(cap)}`, `${signed(inc.food)} / turn`, COL.food,
       `FOOD\nForaging: +${fmt(inc.forage)} (territory supplies up to ${fmt(inc.cap)})\nFungus & aphids: +${fmt(inc.foodIn - inc.forage)}\nTrade: +${fmt(inc.trade)}\nUpkeep: -${fmt(inc.upkeep)}\nStorage: ${cap} (build a Granary for more)`, 160);
     res('mat', fmt(p.materials), `${signed(inc.mat)} / turn`, COL.mat, 'MATERIALS\nSoil, leaf fragments and twigs used to excavate chambers and found outposts. Produced by workers on the Excavate job.', 110);
-    const T = p.tech ? TECHS[p.tech] : null;
-    res('rp', T ? `${T.name}` : 'No research', T ? `${fmt(p.rp)} / ${T.cost}  (+${fmt(inc.rp)})` : `${fmt(p.rp)} banked (+${fmt(inc.rp)})`, COL.rp, 'RESEARCH\nClick the Research button (R) to choose a project.', 190);
-    const pop = population(st, p), pc = popCap(st, p);
-    res('pop', `${fmt(pop)} / ${fmt(pc)}`, `${p.adults.worker} workers`, pop > pc ? COL.bad : COL.pop,
-      `POPULATION\nIn nest: ${p.adults.worker} workers, ${p.adults.soldier} soldiers, ${p.adults.major} majors, ${p.adults.scout} scouts\nIn swarms & outposts: ${pop - sumUnits(p.adults)}\nCapacity ${pc} (Worker Galleries, Barracks, outposts)`, 130);
+    const RT = playerRoot(st), T = RT.tech ? TECHS[RT.tech] : null, cols = playerColonies(st);
+    const rpIn = cols.reduce((a, c) => a + projectIncome(st, c).rp, 0);
+    res('rp', T ? `${T.name}` : 'No research', T ? `${fmt(RT.rp)} / ${T.cost}  (+${fmt(rpIn)})` : `${fmt(RT.rp)} banked (+${fmt(rpIn)})`, COL.rp, 'RESEARCH\nClick the Research button (R) to choose a project.' + (cols.length > 1 ? '\nAll your sister colonies research together.' : ''), 190);
+    const pop = population(st, p), pc = popCap(st, p), empire = factionPop(st, st.playerId);
+    res('pop', `${fmt(pop)} / ${fmt(pc)}`, cols.length > 1 ? `empire ${fmt(empire)}` : `${fmt(p.adults.worker)} workers`, pop > pc ? COL.bad : COL.pop,
+      `POPULATION of ${p.name}\nIn nest: ${p.adults.worker} workers, ${p.adults.soldier} soldiers, ${p.adults.major} majors, ${p.adults.scout} scouts\nIn swarms & outposts: ${pop - sumUnits(p.adults)}\nCapacity ${pc} (Worker Galleries, Barracks, outposts)` + (cols.length > 1 ? `\n\nAll ${cols.length} colonies: ${empire} ants` : ''), 130);
     res('brood', fmt(broodCount(p)), `+${inc.eggs} eggs/turn`, '#f3ead8', `BROOD\nEggs, larvae and pupae: ${broodCount(p)} / ${chVal(p, 'nursery')} nursery capacity.\nNurses can tend ${fmt(inc.nurseSupport)} brood.`, 110);
     // date
     const si = seasonIdx(st.turn);
     text(ctx, dateStr(st.turn), 860, 8, { font: `bold 14px ${FONT_HEAD}`, color: ['#a8e07a', '#f2d24e', '#e8964a', '#bcd8f0'][si], align: 'right' });
-    text(ctx, `Turn ${st.turn + 1}  •  ${Math.round(p._tiles / st.landTiles * 100)}% of land`, 860, 27, { font: `11px ${FONT_BODY}`, color: COL.dim, align: 'right' });
+    const land = playerColonies(st).reduce((a, c) => a + (c._tiles || 0), 0);
+    text(ctx, `Turn ${st.turn + 1}  •  ${Math.round(land / st.landTiles * 100)}% of land`, 860, 27, { font: `11px ${FONT_BODY}`, color: COL.dim, align: 'right' });
     UI.tip(700, 0, 170, 46, `Seasons: Spring (more eggs), Summer (best foraging), Autumn, Winter (foraging & laying nearly stop).\nVictory: destroy all rivals or control 40% of the land.`);
     let bx = 880;
     button(ctx, bx, 7, 92, 32, 'Colony', () => App.setScene(new ColonyScene()), { key: 'C' }); bx += 98;
-    button(ctx, bx, 7, 92, 32, 'Research', () => App.setScene(new ResearchScene()), { key: 'R', primary: !p.tech && TECH_KEYS.some(k => techAvailable(p, k)) && Math.floor(this.t * 1.5) % 2 === 0 }); bx += 98;
+    button(ctx, bx, 7, 92, 32, 'Research', () => App.setScene(new ResearchScene()), { key: 'R', primary: !RT.tech && TECH_KEYS.some(k => techAvailable(RT, k)) && Math.floor(this.t * 1.5) % 2 === 0 }); bx += 98;
     button(ctx, bx, 7, 100, 32, 'Diplomacy', () => App.setScene(new DiplomacyScene()), { key: 'P' }); bx += 106;
     button(ctx, bx, 7, 80, 32, 'Menu', () => this.openMenu(), { key: 'Esc' });
     this.drawInfoPanel(ctx);
@@ -637,7 +684,14 @@ class MapScene {
     this.drawLog(ctx);
     // end turn
     button(ctx, W - 196, H - 66, 182, 52, 'End Turn', () => this.endTurnClick(), { primary: true, size: 18, key: 'Space' });
-    const ready = st.swarms.filter(s => s.owner === st.playerId && s.mp > 0 && !s.path.length).length;
+    const ready = st.swarms.filter(s => isMine(st, s.owner) && s.mp > 0 && !s.path.length).length;
+    if (cols.length > 1) {
+      button(ctx, W - 196, H - 176, 30, 30, '\u25C0', () => this.cycleColony(-1), { size: 12, tip: 'Previous colony ( [ )' });
+      ctx.font = `bold 12px ${FONT_BODY}`;
+      let nm = p.name; while (ctx.measureText(nm).width > 112 && nm.length > 4) nm = nm.slice(0, -2);
+      button(ctx, W - 162, H - 176, 114, 30, nm, () => { this.sel = { type: 'site', x: p.nest.x, y: p.nest.y }; this.centerOn(p.nest.x, p.nest.y); }, { size: 12, tip: `Managing ${p.name} (${cols.indexOf(p) + 1} of ${cols.length} colonies). The Colony button and the resources above show this colony.` });
+      button(ctx, W - 44, H - 176, 30, 30, '\u25B6', () => this.cycleColony(1), { size: 12, tip: 'Next colony ( ] )' });
+    }
     button(ctx, W - 196, H - 104, 182, 32, ready ? `Next swarm (${ready} ready)` : 'Next swarm', () => this.nextSwarm(), { size: 13, key: 'N' });
     button(ctx, W - 196, H - 140, 64, 30, 'Home', () => this.centerOn(p.nest.x, p.nest.y), { size: 12, key: 'H' });
     button(ctx, W - 126, H - 140, 36, 30, Sound.settings.muted ? '\u266A\u0338' : '\u266A', () => { this.dialog = new SoundDialog(() => this.dialog = null); }, { size: 15, tip: 'Sound settings (F9 mutes)' });
@@ -656,10 +710,15 @@ class MapScene {
     const x = 10, y = 56, w = 290;
     if (s.type === 'swarm' || s.type === 'enemy') {
       const sw = st.swarms.find(q => q.id === s.id); if (!sw) return;
-      const c = colById(st, sw.owner), mine = sw.owner === p.id;
-      const h = mine ? 300 : 190;
-      panel(ctx, x, y, w, h, { title: mine ? 'Your Swarm' : `${c.name} Swarm` });
+      const c = colById(st, sw.owner), mine = isMine(st, sw.owner);
+      const h = mine ? 340 + (sw.queens ? 22 : 0) : 210;
+      panel(ctx, x, y, w, h, { title: mine ? (playerColonies(st).length > 1 ? `Swarm of ${c.name}` : 'Your Swarm') : `${c.name} Swarm` });
       let yy = y + 46;
+      if (sw.queens) {
+        drawCrown(ctx, x + 26, yy + 8, 18, 0);
+        text(ctx, `${sw.queens} mated queen${sw.queens > 1 ? 's' : ''}`, x + 50, yy + 2, { font: `bold 14px ${FONT_BODY}`, color: COL.gold });
+        yy += 26;
+      }
       for (const k of CASTE_KEYS) {
         if (!sw.units[k]) continue;
         drawAnt(ctx, c.species, k, x + 26, yy + 10, -0.4, k === 'major' ? 26 : 20, 0);
@@ -671,52 +730,71 @@ class MapScene {
       if (mine) {
         text(ctx, `Movement ${fmt(sw.mp)} / ${swarmMaxMP(st, sw)}`, x + 150, yy + 4, { font: `13px ${FONT_BODY}`, color: COL.dim });
         yy += 26;
-        const terr = st.owner[idx(st, sw.x, sw.y)] === p.id;
+        const ow = st.owner[idx(st, sw.x, sw.y)], terr = ow >= 0 && isMine(st, ow);
         text(ctx, terr ? 'Supplied by your territory' : 'Outside territory: attrition each turn', x + 16, yy, { font: `12px ${FONT_BODY}`, color: terr ? COL.good : '#f0a070' });
         yy += 22;
-        if (sw.path.length) { text(ctx, `Marching: ${sw.path.length} tiles to go`, x + 16, yy, { font: `12px ${FONT_BODY}`, color: COL.gold }); yy += 18; }
+        if (sw.chase) { text(ctx, 'Pursuing an enemy swarm', x + 16, yy, { font: `bold 12px ${FONT_BODY}`, color: '#ff9a7a' }); yy += 18; }
+        else if (sw.path.length) { text(ctx, `Marching: ${sw.path.length} tiles to go`, x + 16, yy, { font: `12px ${FONT_BODY}`, color: COL.gold }); yy += 18; }
         else { text(ctx, App.touch ? 'Tap the map twice to march there' : 'Click / right-click the map to move', x + 16, yy, { font: `italic 12px ${FONT_BODY}`, color: COL.dim }); yy += 18; }
-        const by = y + h - 84;
+        const by = y + h - 124;
         const site = siteAt(st, sw.x, sw.y);
-        const onOwn = site && site.col === p;
-        const err = canFoundOutpost(st, sw);
+        const onOwn = site && isMine(st, site.col.id);
+        const home = c.nest;
         button(ctx, x + 12, by, 130, 32, onOwn ? (site.kind === 'nest' ? 'Disband' : 'Garrison') : 'Return home', () => {
-          if (onOwn) { disbandSwarm(st, sw); this.sel = { type: 'site', x: sw.x, y: sw.y }; recompute(st); this.buildOverlays(); App.toast(site.kind === 'nest' ? 'Swarm returned to the nest.' : 'Swarm garrisoned in the outpost.'); }
-          else this.orderMove(sw, p.nest.x, p.nest.y);
-        }, { tip: onOwn ? 'Merge these ants back into the colony.' : 'March back to the home nest.' });
-        button(ctx, x + 148, by, 130, 32, 'Found Outpost', () => {
-          const e = foundOutpost(st, sw); if (e) App.toast(e, COL.bad); else { Sound.sfx('outpost'); this.sel = { type: 'site', x: sw.x, y: sw.y }; this.buildOverlays(); App.toast('Satellite nest founded!', COL.good); }
-        }, { disabled: !!err || onOwn, tip: err || 'Establish a satellite nest here (30 materials). The workers stay as its garrison and the land becomes yours.' });
-        button(ctx, x + 12, by + 40, 130, 32, 'Stop', () => { sw.path = []; }, { disabled: !sw.path.length });
+          if (onOwn) { if (sw.queens) App.toast('The young queen is adopted by the nest.'); sw.queens = 0; disbandSwarm(st, sw); this.sel = { type: 'site', x: sw.x, y: sw.y }; recompute(st); this.buildOverlays(); App.toast(site.kind === 'nest' ? 'Swarm returned to the nest.' : 'Swarm garrisoned in the outpost.'); }
+          else this.orderMove(sw, home.x, home.y);
+        }, { tip: onOwn ? 'Merge these ants back into the colony.' : `March back to ${c.name}.` });
+        if (sw.queens) {
+          const err = canFoundColony(st, sw);
+          button(ctx, x + 148, by, 130, 32, 'Found Colony', () => {
+            const r = foundColony(st, sw);
+            if (r.err) App.toast(r.err, COL.bad);
+            else { Sound.sfx('outpost'); st.activeId = r.col.id; this.sel = { type: 'site', x: r.col.nest.x, y: r.col.nest.y }; this.buildOverlays(); App.toast(`${r.col.name} is founded! A new sister colony.`, COL.good); }
+          }, { primary: !err, disabled: !!err, tip: err || 'The queen digs a founding chamber here and starts a new sister colony with this escort as its first workers. It shares your research and fights for your empire.' });
+        } else {
+          const err = canFoundOutpost(st, sw);
+          button(ctx, x + 148, by, 130, 32, 'Found Outpost', () => {
+            const e = foundOutpost(st, sw); if (e) App.toast(e, COL.bad); else { Sound.sfx('outpost'); this.sel = { type: 'site', x: sw.x, y: sw.y }; this.buildOverlays(); App.toast('Satellite nest founded!', COL.good); }
+          }, { disabled: !!err || onOwn, tip: err || 'Establish a satellite nest here (30 materials). The workers stay as its garrison and the land becomes yours.' });
+        }
+        button(ctx, x + 12, by + 40, 130, 32, 'Stop', () => { sw.path = []; sw.chase = null; }, { disabled: !sw.path.length });
         button(ctx, x + 148, by + 40, 130, 32, 'Split in half', () => {
           const half = {}; for (const k of CASTE_KEYS) half[k] = Math.floor(sw.units[k] / 2);
           if (sumUnits(half) < 1) return;
           for (const k of CASTE_KEYS) sw.units[k] -= half[k];
-          const ns = createSwarm(st, p, half, sw.x, sw.y); ns.mp = sw.mp; this.sel = { type: 'swarm', id: ns.id };
+          const ns = createSwarm(st, c, half, sw.x, sw.y); ns.mp = sw.mp; this.sel = { type: 'swarm', id: ns.id };
         }, { disabled: sumUnits(sw.units) < 2 });
+        const ferr = canForcedMarch(st, sw);
+        button(ctx, x + 12, by + 80, 266, 32, 'Forced March (+3 movement)', () => {
+          const e = forcedMarch(st, sw); if (e) App.toast(e, COL.bad); else { Sound.sfx('march'); this.pathCache = null; if (sw.chase) updateChase(st, sw); if (sw.path.length && !this.anim) this.anim = { id: sw.id, t: 1 }; App.toast('The swarm pushes on at a run - a few stragglers are lost.'); }
+        }, { disabled: !!ferr, tip: ferr || 'Run down a fleeing enemy: +3 movement this turn, but about 4% of the swarm drops out exhausted.' });
       } else {
         yy += 26;
-        const rel = c.rel[p.id];
-        text(ctx, `${SPECIES[c.species].name}  •  ${atWar(st, p.id, c.id) ? 'AT WAR' : 'at peace'}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: atWar(st, p.id, c.id) ? COL.bad : COL.dim });
-        text(ctx, `Opinion of you: ${Math.round(rel.score)}`, x + 16, yy + 20, { font: `12px ${FONT_BODY}`, color: COL.dim });
+        const rel = relOf(st, c.id, st.playerId), war = atWar(st, p.id, c.id);
+        text(ctx, `${SPECIES[c.species].name}  •  ${war ? 'AT WAR' : 'at peace'}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: war ? COL.bad : COL.dim });
+        text(ctx, `Opinion of you: ${Math.round(rel ? rel.score : 0)}`, x + 16, yy + 20, { font: `12px ${FONT_BODY}`, color: COL.dim });
+        text(ctx, war ? `Area of influence ${zocR(st, sw)} tiles - come this close to force a battle` : `Area of influence ${zocR(st, sw)} tiles`, x + 16, yy + 40, { font: `11px ${FONT_BODY}`, color: war ? '#ff9a7a' : COL.faint });
       }
       return;
     }
     if (s.type === 'site') {
       const site = siteAt(st, s.x, s.y); if (!site) { this.sel = { type: 'tile', x: s.x, y: s.y }; return; }
-      const c = site.col, mine = c === p;
+      const c = site.col, mine = isMine(st, c.id);
       if (mine && site.kind === 'nest') {
-        panel(ctx, x, y, w, 236, { title: `${c.name} - Home Nest` });
+        panel(ctx, x, y, w, 276, { title: `${c.name} - ${isRoot(c) ? 'Home Nest' : 'Sister Colony'}` });
         let yy = y + 48;
         const line = (a, b, col) => { text(ctx, a, x + 16, yy, { font: `13px ${FONT_BODY}`, color: COL.dim }); text(ctx, b, x + w - 16, yy, { font: `bold 13px ${FONT_BODY}`, align: 'right', color: col || COL.text }); yy += 20; };
         line('Queen', 'alive and laying', COL.good);
-        line('Workers / Soldiers', `${c.adults.worker} / ${c.adults.soldier}`);
+        line('Workers / Soldiers', `${fmt(c.adults.worker)} / ${fmt(c.adults.soldier)}`);
         line('Majors / Scouts', `${c.adults.major} / ${c.adults.scout}`);
-        line('Brood', `${broodCount(c)}`);
+        line('Brood', `${fmt(broodCount(c))}   (population ${fmt(population(st, c))})`);
         line('Territory', `${c._tiles} tiles`);
         line('Outposts', `${c.outposts.length} / ${cstats(st, c).maxOutposts}`);
-        button(ctx, x + 12, y + 188, 130, 34, 'Enter Colony', () => App.setScene(new ColonyScene()), { primary: true });
-        button(ctx, x + 148, y + 188, 130, 34, 'Muster Swarm', () => { this.dialog = new MusterDialog(this); });
+        button(ctx, x + 12, y + 188, 130, 34, 'Enter Colony', () => { st.activeId = c.id; App.setScene(new ColonyScene()); }, { primary: true });
+        button(ctx, x + 148, y + 188, 130, 34, 'Muster Swarm', () => { st.activeId = c.id; this.dialog = new MusterDialog(this); });
+        const ferr = canNuptialFlight(st, c), nq = flightQueens(st, c);
+        button(ctx, x + 12, y + 230, 266, 34, `Nuptial Flight (${nq} quee${nq > 1 ? 'ns' : 'n'})`, () => { st.activeId = c.id; this.doFlight(c); }, {
+          disabled: !!ferr, tip: ferr || `Release winged princesses and males (${flightCost(st, c).food} food). Mated queens come down with an escort of workers - march them to open land and found sister colonies. This is how ant empires spread.` });
       } else if (mine) {
         const o = site.outpost;
         panel(ctx, x, y, w, 190, { title: 'Satellite Nest' });
@@ -728,18 +806,18 @@ class MapScene {
           const sw = withdrawGarrison(st, c, o); if (sw) { this.sel = { type: 'swarm', id: sw.id }; } else App.toast('Not enough ants to withdraw.', COL.bad);
         }, { tip: 'Leaves 5 workers behind to keep the outpost.' });
       } else {
-        const known = p.met[c.id];
+        const known = playerRoot(st).met[facId(st, c.id)];
         panel(ctx, x, y, w, 196, { title: site.kind === 'nest' ? `${c.name} Nest` : `${c.name} Outpost` });
         let yy = y + 48;
         drawAnt(ctx, c.species, 'soldier', x + 40, yy + 26, -0.5, 46, Math.floor(this.t * 4) % 6);
         text(ctx, SPECIES[c.species].name, x + 80, yy + 4, { font: `bold 14px ${FONT_HEAD}`, color: c.color });
         text(ctx, SPECIES[c.species].latin, x + 80, yy + 24, { font: `italic 12px ${FONT_HEAD}`, color: COL.dim });
         yy += 56;
-        const war = atWar(st, p.id, c.id);
-        text(ctx, war ? 'Status: AT WAR' : `Status: peace${routeBetween(st, p.id, c.id) ? ' (trading)' : ''}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: war ? COL.bad : COL.good }); yy += 20;
-        if (known) text(ctx, `Opinion of you: ${Math.round(c.rel[p.id].score)}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: COL.dim }); yy += 20;
-        if (st.visible[idx(st, s.x, s.y)]) text(ctx, site.kind === 'nest' ? `Estimated defenders: ~${Math.round(sumUnits(c.adults) / 10) * 10}` : `Garrison: ~${sumUnits(site.outpost.units) + 4}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: '#f0b080' });
-        button(ctx, x + 12, y + 154, 266, 32, 'Diplomacy', () => App.setScene(new DiplomacyScene(c.id)));
+        const war = atWar(st, p.id, c.id), rel = relOf(st, c.id, st.playerId);
+        text(ctx, war ? 'Status: AT WAR' : `Status: peace${routeBetween(st, st.playerId, c.id) ? ' (trading)' : ''}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: war ? COL.bad : COL.good }); yy += 20;
+        if (known && rel) text(ctx, `Opinion of you: ${Math.round(rel.score)}${isRoot(c) ? '' : '  (sister of ' + facRoot(st, c.id).name + ')'}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: COL.dim }); yy += 20;
+        if (st.visible[idx(st, s.x, s.y)]) text(ctx, site.kind === 'nest' ? `Estimated defenders: ~${fmt(Math.round(sumUnits(c.adults) / 10) * 10)}` : `Garrison: ~${sumUnits(site.outpost.units) + 4}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: '#f0b080' });
+        button(ctx, x + 12, y + 154, 266, 32, 'Diplomacy', () => App.setScene(new DiplomacyScene(facId(st, c.id))));
       }
       return;
     }
@@ -779,7 +857,7 @@ class MapScene {
       ctx.beginPath(); ctx.arc(x + (c.nest.x + 0.5) * sx, y + (c.nest.y + 0.5) * sy, 3.5, 0, 6.28); ctx.fill(); ctx.stroke();
     }
     for (const sw of st.swarms) {
-      if (sw.owner !== st.playerId && !st.visible[idx(st, sw.x, sw.y)]) continue;
+      if (!isMine(st, sw.owner) && !st.visible[idx(st, sw.x, sw.y)]) continue;
       ctx.fillStyle = colById(st, sw.owner).color;
       ctx.fillRect(x + sw.x * sx - 1, y + sw.y * sy - 1, 3, 3);
     }
@@ -841,9 +919,9 @@ class MapScene {
     const tips = [
       '1. Open the COLONY view (C) to set jobs, choose what the queen\'s eggs become, and dig new chambers.',
       '2. Pick a RESEARCH project (R). Pheromone Trails is a strong start.',
-      '3. MUSTER a swarm from your nest to explore. Swarms of 10+ workers can found OUTPOSTS that claim new land.',
-      '4. Watch your food. Every ant eats, and winter nearly stops foraging - fill the granary in autumn.',
-      '5. Rival colonies will grow hostile as you compete for land. Trade with friends, crush enemies.',
+      '3. MUSTER a swarm to explore. Enemies inside a red ring are within striking range - step in and battle begins.',
+      '4. Grow big, then hold a NUPTIAL FLIGHT in spring: mated queens can found SISTER COLONIES across the map.',
+      '5. Watch your food. Every ant eats, and winter nearly stops foraging - fill the granary in autumn.',
     ];
     let yy = y + 210;
     for (const t of tips) yy += wrap(ctx, t, x + 40, yy, w - 80, 19, { font: `14px ${FONT_BODY}`, color: '#e8dcc0' }) + 6;
@@ -922,19 +1000,20 @@ class MusterDialog {
     modalBackdrop(ctx);
     const w = 520, h = 400, x = W / 2 - w / 2, y = H / 2 - h / 2;
     panel(ctx, x, y, w, h, { title: 'Muster a Swarm' });
-    text(ctx, 'Choose which ants leave the nest. Shift-click for steps of 10.', x + 20, y + 48, { font: `13px ${FONT_BODY}`, color: COL.dim });
+    text(ctx, `Choose which ants leave ${p.name}. +/- move 5% at a time (Shift for single ants).`, x + 20, y + 48, { font: `13px ${FONT_BODY}`, color: COL.dim });
     let yy = y + 80;
     for (const k of CASTE_KEYS) {
       const avail = p.adults[k], locked = !casteUnlocked(p, k);
       drawAnt(ctx, p.species, k, x + 36, yy + 12, -0.4, k === 'major' ? 30 : 24, 0, locked ? 0.3 : 1);
       text(ctx, CASTES[k].name, x + 66, yy + 4, { font: `bold 14px ${FONT_BODY}`, color: locked ? COL.faint : COL.text });
-      text(ctx, locked ? `requires ${TECHS[CASTES[k].req].name}` : `${avail} in nest`, x + 66, yy + 22, { font: `11px ${FONT_BODY}`, color: COL.dim });
-      const step = () => App.keys['shift'] ? 10 : 1;
+      text(ctx, locked ? `requires ${TECHS[CASTES[k].req].name}` : `${fmt(avail)} in nest`, x + 66, yy + 22, { font: `11px ${FONT_BODY}`, color: COL.dim });
+      const step = () => App.keys['shift'] ? 1 : Math.max(1, Math.round(avail / 20));
       button(ctx, x + 250, yy + 4, 30, 28, '-', () => this.u[k] = Math.max(0, this.u[k] - step()), { disabled: locked });
-      text(ctx, String(this.u[k]), x + 315, yy + 10, { font: `bold 15px ${FONT_BODY}`, align: 'center' });
+      text(ctx, fmt(this.u[k]), x + 315, yy + 10, { font: `bold 15px ${FONT_BODY}`, align: 'center' });
       button(ctx, x + 350, yy + 4, 30, 28, '+', () => this.u[k] = Math.min(avail, this.u[k] + step()), { disabled: locked });
-      button(ctx, x + 390, yy + 4, 50, 28, 'All', () => this.u[k] = avail, { disabled: locked, size: 12 });
-      button(ctx, x + 446, yy + 4, 50, 28, 'None', () => this.u[k] = 0, { disabled: locked, size: 12 });
+      button(ctx, x + 390, yy + 4, 34, 28, 'All', () => this.u[k] = avail, { disabled: locked, size: 11 });
+      button(ctx, x + 428, yy + 4, 34, 28, '½', () => this.u[k] = Math.floor(avail / 2), { disabled: locked, size: 13 });
+      button(ctx, x + 466, yy + 4, 40, 28, 'None', () => this.u[k] = 0, { disabled: locked, size: 11 });
       yy += 50;
     }
     const pw = power(st, p, this.u);

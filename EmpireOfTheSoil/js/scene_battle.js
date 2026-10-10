@@ -170,7 +170,7 @@ class BattleScene {
   }
   drawResult(ctx) {
     const st = App.st, b = this.b, pid = st.playerId;
-    const playerAtk = b.atk === pid;
+    const playerAtk = isMine(st, b.atk);
     const won = (b.winner === 'atk') === playerAtk;
     if (!this.resultSounded) { this.resultSounded = true; Sound.sfx(won ? 'victory' : 'defeat'); }
     const w = 520, h = 210, x = W / 2 - w / 2, y = H / 2 - 40;

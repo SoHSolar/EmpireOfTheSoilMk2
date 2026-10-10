@@ -314,6 +314,7 @@ class MapView3D {
     this.drawFeatures(scene, items);
     this.drawSwarms(scene, items, labels, dt);
     this.drawRoutes(scene, sprites);
+    for (const z of this.zocSprites) sprites.push(z);
     this.drawPath(scene, items, sprites, labels);
     this.drawSelection(scene, items);
     for (const [key, l] of this.lists) {
@@ -392,9 +393,9 @@ class MapView3D {
   }
   drawSwarms(scene, items, labels, dt) {
     const st = this.st, stackIdx = {};
-    this.swarmScreen = new Map();
+    this.swarmScreen = new Map(); this.zocSprites = [];
     for (const sw of st.swarms) {
-      const vis = sw.owner === st.playerId || st.visible[idx(st, sw.x, sw.y)];
+      const vis = isMine(st, sw.owner) || st.visible[idx(st, sw.x, sw.y)];
       if (!vis) continue;
       const c = colById(st, sw.owner);
       const key = sw.x + ',' + sw.y, si = stackIdx[key] = (stackIdx[key] ?? -1) + 1;
@@ -414,8 +415,18 @@ class MapView3D {
         else { const ph = this.t * (0.4 + r() * 0.5) + i; a = ph + Math.PI / 2; ox += Math.cos(ph) * 0.06; oz += Math.sin(ph) * 0.06; }
         this.addAnt(c.species, castes[i], Math.floor(this.t * (moving ? 18 : 7) + i * 3), x + ox, z + oz, a);
       }
+      if (sw.queens) this.addAnt(c.species, 'queen', Math.floor(this.t * (moving ? 12 : 3)), x, z, moving ? ang : this.t * 0.3, 0.36);
+      // area of influence
+      const hostile = !isMine(st, sw.owner) && atWar(st, st.playerId, sw.owner);
+      if ((hostile && st.visible[idx(st, sw.x, sw.y)]) || (scene.sel && scene.sel.type === 'swarm' && scene.sel.id === sw.id)) {
+        const R0 = zocR(st, sw) + 0.5, n = Math.round(R0 * 22), col = hostile ? [1, 0.38, 0.25] : [1, 0.8, 0.35];
+        for (let i = 0; i < n; i++) {
+          const a = i / n * Math.PI * 2 + this.t * 0.15, gx = x + Math.cos(a) * R0, gz = z + Math.sin(a) * R0;
+          this.zocSprites.push({ v: [gx, this.groundAt(gx, gz) + 0.06, gz, 0.07 + this.cam.dist * 0.005, col[0], col[1], col[2], 0.8 + 0.2 * Math.sin(this.t * 3 + i * 0.5)] });
+        }
+      }
       const p = this.project(x, y + 0.2, z);
-      if (p) labels.push({ kind: 'swarm', x: p[0], y: p[1] + 16, sw, col: c, tot, ready: sw.owner === st.playerId && sw.mp > 0 && !sw.path.length, war: sw.owner !== st.playerId && atWar(st, st.playerId, sw.owner) });
+      if (p) labels.push({ kind: 'swarm', x: p[0], y: p[1] + 16, sw, col: c, tot, queens: sw.queens || 0, ready: isMine(st, sw.owner) && sw.mp > 0 && !sw.path.length, war: !isMine(st, sw.owner) && atWar(st, st.playerId, sw.owner) });
     }
   }
   drawRoutes(scene, sprites) {
@@ -456,7 +467,7 @@ class MapView3D {
     if (sw.path && sw.path.length) path = sw.path;
     else if (scene.hover && inMap(st, ...scene.hover) && !scene.anim && !UI.consumesPoint(UI.mx, UI.my)) {
       const key = scene.hover.join(',');
-      if (!scene.pathCache || scene.pathCache.key !== key) scene.pathCache = { key, path: findPath(st, sw.x, sw.y, scene.hover[0], scene.hover[1], playerCol(st), { maxNodes: 15000 }) };
+      if (!scene.pathCache || scene.pathCache.key !== key) scene.pathCache = { key, path: findPath(st, sw.x, sw.y, scene.hover[0], scene.hover[1], colById(st, sw.owner), { maxNodes: 15000 }) };
       path = scene.pathCache.path;
       if (!path && !(sw.x === scene.hover[0] && sw.y === scene.hover[1])) {
         const p = this.project(scene.hover[0] + 0.5, this.groundAt(scene.hover[0] + 0.5, scene.hover[1] + 0.5), scene.hover[1] + 0.5);
@@ -464,9 +475,10 @@ class MapView3D {
       }
     }
     if (!path || !path.length) return;
-    const c = playerCol(st), full = swarmMaxMP(st, sw);
+    const c = colById(st, sw.owner), full = swarmMaxMP(st, sw);
     let mp = sw.mp, turn = 0, px = sw.x, py = sw.y;
-    for (let i = 0; i < path.length; i++) {
+    const eng = scene.engageIndex(sw, path), last = eng >= 0 ? eng : path.length - 1;
+    for (let i = 0; i <= last; i++) {
       const [x, y] = path[i];
       const cost = moveCostStep(st, px, py, x, y, c);
       if (mp + 1e-6 < cost && !(mp >= full - 1e-6)) { turn++; mp = full; }
@@ -474,11 +486,11 @@ class MapView3D {
       const col = turn === 0 ? [0.66, 0.94, 0.48] : turn === 1 ? [0.95, 0.82, 0.3] : [0.94, 0.6, 0.3];
       const gx = x + 0.5, gz = y + 0.5, gy = this.groundAt(gx, gz) + 0.12;
       sprites.push({ v: [gx, gy, gz, 0.11, col[0], col[1], col[2], 0.95] });
-      if (i === path.length - 1) {
+      if (i === last) {
         const M = new Float32Array(16); M4.yaw(M, 0, gx, gy - 0.08, gz, 0, 0.42 + Math.sin(this.t * 5) * 0.03);
-        items.push({ mesh: this.mRing, model: M, tint: col, emis: 1, shadow: false });
-        const site = siteAt(st, x, y), foe = swarmsAt(st, x, y).find(s => s.owner !== st.playerId);
-        let label = (site && site.col !== c) || foe ? '⚔ Attack' : turn ? `${turn + 1} turns` : '';
+        items.push({ mesh: this.mRing, model: M, tint: eng >= 0 ? [1, 0.4, 0.3] : col, emis: 1, shadow: false });
+        const site = siteAt(st, x, y), foe = swarmsAt(st, x, y).find(s => !isMine(st, s.owner));
+        let label = eng >= 0 ? `⚔ Battle${turn ? ` in ${turn + 1} turns` : '!'}` : (site && !isMine(st, site.col.id)) || foe ? '⚔ Attack' : turn ? `${turn + 1} turns` : '';
         if (scene.pendingTap && scene.pendingTap[0] === x && scene.pendingTap[1] === y) label = (label ? label + ' - ' : '') + 'tap again to confirm';
         const p = this.project(gx, gy + 0.5, gz);
         if (label && p) labels.push({ kind: 'text', x: p[0], y: p[1], text: label, color: rgbStr(col.map(v => v * 255)) });
@@ -563,6 +575,7 @@ class MapScene3D extends MapScene {
         text(ctx, bt, l.x, l.y + 7.5, { font: ctx.font, align: 'center', base: 'middle', color: '#fff', shadow: false });
         if (l.ready) { ctx.fillStyle = '#9fe07a'; ctx.beginPath(); ctx.arc(l.x + bw / 2 + 4, l.y + 7.5, 3, 0, 6.28); ctx.fill(); }
         if (l.war) text(ctx, '⚔', l.x - bw / 2 - 10, l.y, { font: `bold 12px ${FONT_BODY}`, color: '#ff7a5c' });
+        if (l.queens) drawCrown(ctx, l.x, l.y - 34, 16, l.queens);
       } else if (l.kind === 'text') text(ctx, l.text, l.x, l.y, { font: `bold 13px ${FONT_BODY}`, align: 'center', color: l.color });
       else if (l.kind === 'nopath') text(ctx, '✖', l.x, l.y, { font: `bold 18px ${FONT_BODY}`, align: 'center', base: 'middle', color: '#ff6b5c' });
     }

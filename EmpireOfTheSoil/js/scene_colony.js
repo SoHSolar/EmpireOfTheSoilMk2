@@ -27,8 +27,9 @@ const EDGES = [
 function chLevel(c, k) { return k === 'gates' || CH_LAYOUT[k] ? (c.chambers[k] || 0) : 1; }
 function chGeom(c, k) {
   const L = CH_LAYOUT[k], lvl = c.chambers[k] || 0;
-  const s = lvl ? 0.72 + 0.07 * lvl : 0.7;
-  return { x: L.x, y: L.y, rx: L.rx * s, ry: L.ry * (lvl ? 0.8 + 0.05 * lvl : 0.8), lvl };
+  const e = Math.min(lvl, 5) + Math.max(0, lvl - 5) * 0.35;
+  const s = lvl ? 0.72 + 0.07 * e : 0.7;
+  return { x: L.x, y: L.y, rx: L.rx * s, ry: L.ry * (lvl ? 0.8 + 0.05 * e : 0.8), lvl };
 }
 
 class ColonyScene {
@@ -270,7 +271,7 @@ class ColonyScene {
       if (hov === k || this.selCh === k) ellipse(G, [], this.selCh === k ? COL.gold : 'rgba(255,220,150,0.6)', 2);
       const p = v.screenOf(G.x, G.y - G.ry - 2);
       if (p) {
-        const label = `${Ch.name} ${['I', 'II', 'III', 'IV', 'V'][G.lvl - 1]}`;
+        const label = `${Ch.name} ${ROMAN[G.lvl - 1]}`;
         ctx.font = `bold 11px ${FONT_BODY}`;
         const tw = ctx.measureText(label).width + 12;
         roundRect(ctx, p[0] - tw / 2, p[1] - 8, tw, 16, 8); ctx.fillStyle = 'rgba(15,10,6,0.72)'; ctx.fill();
@@ -438,7 +439,7 @@ class ColonyScene {
     const c = this.col(), G = chGeom(c, k), Ch = CHAMBERS[k];
     const bld = c.builds.find(b => b.key === k);
     if (!G.lvl) { if (bld) text(ctx, `digging... ${bld.left} turn${bld.left > 1 ? 's' : ''}`, G.x, G.y + 8, { font: `bold 11px ${FONT_BODY}`, align: 'center', color: COL.gold }); return; }
-    const label = `${Ch.name} ${['I', 'II', 'III', 'IV', 'V'][G.lvl - 1]}`;
+    const label = `${Ch.name} ${ROMAN[G.lvl - 1]}`;
     ctx.font = `bold 11px ${FONT_BODY}`;
     const tw = ctx.measureText(label).width + 12;
     roundRect(ctx, G.x - tw / 2, G.y - G.ry - 9, tw, 16, 8); ctx.fillStyle = 'rgba(15,10,6,0.7)'; ctx.fill();
@@ -453,13 +454,24 @@ class ColonyScene {
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, 46); ctx.fillStyle = COL.border; ctx.fillRect(0, 46, W, 1);
     button(ctx, 10, 7, 110, 32, '◀ Map', () => App.toMap(), { key: 'Esc' });
     text(ctx, c.name, 136, 8, { font: `bold 18px ${FONT_HEAD}`, color: COL.gold });
+    const cols = playerColonies(st);
+    if (cols.length > 1 && !this.colOverride) {
+      const go = d => { const i = cols.indexOf(c); const n = cols[(i + d + cols.length) % cols.length]; st.activeId = n.id; this.refreshSoil(true); Sound.sfx('tab'); };
+      button(ctx, 404, 9, 28, 28, '\u25C0', () => go(-1), { size: 11, tip: `Previous colony (${cols.indexOf(c) + 1} of ${cols.length})` });
+      button(ctx, 436, 9, 28, 28, '\u25B6', () => go(1), { size: 11, tip: 'Next colony' });
+    }
     text(ctx, `${SPECIES[c.species].name}  •  ${dateStr(st.turn)}`, 136, 28, { font: `11px ${FONT_BODY}`, color: COL.dim });
     let x = 470;
     const r = (icon, a, b, col) => { drawIcon(ctx, icon, x + 9, 23, 18); text(ctx, a, x + 24, 8, { font: `bold 14px ${FONT_BODY}`, color: col }); text(ctx, b, x + 24, 27, { font: `11px ${FONT_BODY}`, color: b.startsWith('-') ? COL.bad : COL.dim }); x += 130; };
     r('food', `${fmt(c.food)}/${fmt(storageCap(st, c))}`, `${signed(inc.food)}/turn`, COL.food);
     r('mat', fmt(c.materials), `${signed(inc.mat)}/turn`, COL.mat);
     r('pop', `${fmt(population(st, c))}/${fmt(popCap(st, c))}`, 'population', COL.pop);
-    r('brood', `${broodCount(c)}/${chVal(c, 'nursery')}`, 'brood', '#f3ead8');
+    r('brood', `${fmt(broodCount(c))}/${fmt(chVal(c, 'nursery'))}`, 'brood', '#f3ead8');
+    if (!this.colOverride) {
+      const ferr = canNuptialFlight(st, c);
+      button(ctx, W - 310, 7, 142, 32, 'Nuptial Flight', () => { App.toMap(); App.mapScene.doFlight(c); }, { disabled: !!ferr, size: 13,
+        tip: ferr || `Release winged princesses (${flightCost(st, c).food} food). ${flightQueens(st, c)} mated queen(s) will land with worker escorts - march them out to found sister colonies.` });
+    }
     button(ctx, W - 160, 7, 150, 32, 'Muster Swarm', () => { this.dialog = new MusterDialog(App.mapScene, this); }, { primary: true });
   }
 
@@ -498,9 +510,9 @@ class ColonyScene {
     line('Queen lays', `${inc.eggs} eggs / turn`, COL.text, 'Limited by the Royal Chamber, season, nursery space, population cap and food.');
     y += 6;
     sec('Population');
-    for (const k of CASTE_KEYS) if (c.adults[k] || casteUnlocked(c, k)) line(`${CASTES[k].name} in nest`, String(c.adults[k]));
+    for (const k of CASTE_KEYS) if (c.adults[k] || casteUnlocked(c, k)) line(`${CASTES[k].name} in nest`, fmt(c.adults[k]));
     const pop = population(st, c), pc = popCap(st, c);
-    line('Total (incl. swarms/outposts)', `${pop} / ${pc}`, pop > pc ? COL.bad : COL.text, pop > pc ? 'Overcrowded! Mortality rises sharply. Dig more Worker Galleries.' : null);
+    line('Total (incl. swarms/outposts)', `${fmt(pop)} / ${fmt(pc)}`, pop > pc ? COL.bad : COL.text, pop > pc ? 'Overcrowded! Mortality rises sharply. Dig more Worker Galleries.' : null);
     line('Mortality', `${Math.max(0.5, S.mortality).toFixed(1)}% / turn`, COL.dim, 'Natural deaths. A Refuse Midden and Ventilation Shafts reduce it.');
     y += 6;
     sec('Military');
@@ -579,7 +591,7 @@ class ColonyScene {
       text(ctx, `${Ch.name}`, x, y, { font: `bold 13px ${FONT_BODY}`, color: lvl ? COL.text : COL.dim });
       text(ctx, lvl ? `Lv ${lvl}` : 'not dug', x + 150, y + 1, { font: `12px ${FONT_BODY}`, color: lvl ? COL.gold : COL.faint });
       const cur = lvl ? Ch.fmt(Ch.values[lvl - 1]) : 'none';
-      const nxt = lvl < 5 ? Ch.fmt(Ch.values[lvl]) : 'max';
+      const nxt = lvl < CHAMBER_MAX ? Ch.fmt(Ch.values[lvl]) : 'max';
       text(ctx, `${cur}  →  ${nxt}`, x, y + 20, { font: `12px ${FONT_BODY}`, color: COL.dim });
       UI.tip(x - 6, y - 4, w - 110, hgt - 4, `${Ch.name}\n${Ch.desc}`);
       const bld = c.builds.find(b => b.key === k);
@@ -588,8 +600,8 @@ class ColonyScene {
         text(ctx, `${bld.left} turn${bld.left > 1 ? 's' : ''}`, x + w - 50, y + 20, { font: `12px ${FONT_BODY}`, align: 'center', color: COL.gold });
       } else {
         const err = canBuild(st, c, k);
-        const cost = lvl < 5 ? chamberCost(k, lvl + 1) : 0;
-        button(ctx, x + w - 100, y + 2, 100, 34, lvl >= 5 ? 'Max level' : lvl ? `Dig ${cost}` : `Excavate ${cost}`, () => {
+        const cost = lvl < CHAMBER_MAX ? chamberCost(k, lvl + 1) : 0;
+        button(ctx, x + w - 100, y + 2, 100, 34, lvl >= CHAMBER_MAX ? 'Max level' : lvl ? `Dig ${cost}` : `Excavate ${cost}`, () => {
           const e = startBuild(st, c, k); if (e) App.toast(e, COL.bad); else { Sound.sfx('dig'); App.toast(`Workers begin excavating: ${Ch.name}`); }
         }, { disabled: !!err, primary: !err && sel, size: 12, tip: err || `Costs ${cost} materials, takes ${chamberTime(k, lvl + 1)} turns.` });
       }

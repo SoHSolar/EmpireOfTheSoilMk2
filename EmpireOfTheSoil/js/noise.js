@@ -63,7 +63,7 @@ function fmt(n) {
   if (n >= 10) return n.toFixed(0);
   return (Math.round(n * 10) / 10).toString();
 }
-function signed(n) { const v = Math.round(n * 10) / 10; return (v >= 0 ? '+' : '') + v; }
+function signed(n) { const v = Math.round(n * 10) / 10; return (v >= 0 ? '+' : '-') + (Math.abs(v) >= 1000 ? fmt(Math.abs(v)) : Math.abs(v)); }
 function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
 function shuffle(rng, arr) {
   for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
