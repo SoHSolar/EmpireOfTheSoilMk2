@@ -30,17 +30,21 @@ class BattleScene {
     Sound.music('battle'); Sound.ambience('none'); Sound.sfx('battle_start');
   }
   spawnSide(units, side) {
-    const order = ['major', 'soldier', 'scout', 'worker'];
+    // heavy melee in front, then light troops, then ranged lines, workers, and siege engines at the back
+    const rank = k => { const r = casteRole(k); return k === 'worker' ? 3 : r === 'siege' ? 4 : r === 'ranged' ? 2 : k === 'scout' ? 1.5 : 1 - (CASTES[k].shield || 1) * 0.1; };
+    const order = CASTE_KEYS.slice().sort((a, b) => rank(a) - rank(b));
     let col = 0;
     for (const k of order) {
       const n = Math.ceil((units[k] || 0) / this.scale);
+      const big = CASTES[k].machine ? 1.6 : 1;
       for (let i = 0; i < n; i++) {
-        const rowN = 12, c = col + Math.floor(i / rowN), r = i % rowN;
-        const x = side === 0 ? 330 - c * 34 : 950 + c * 34;
-        const y = 260 + r * 30 + (c % 2) * 15;
-        this.sprites.push({ side, caste: k, x: x + (Math.random() - 0.5) * 10, y: y + (Math.random() - 0.5) * 8, hx: x, hy: y, alive: true, dead: 0, a: side ? Math.PI : 0, ph: Math.random() * 6, lunge: 0 });
+        const rowN = CASTES[k].machine ? 7 : 12, c = col + Math.floor(i / rowN), r = i % rowN;
+        const x = side === 0 ? 330 - c * 34 * big : 950 + c * 34 * big;
+        const y = 260 + r * 30 * (12 / rowN) + (c % 2) * 15;
+        this.sprites.push({ side, caste: k, x: x + (Math.random() - 0.5) * 10, y: y + (Math.random() - 0.5) * 8, hx: x, hy: y, alive: true, dead: 0, a: side ? Math.PI : 0, ph: Math.random() * 6, lunge: 0,
+          role: casteRole(k), fire: 0.4 + Math.random() * 1.2 });
       }
-      if (n) col += Math.ceil(n / 12);
+      if (n) col += Math.ceil(n / (CASTES[k].machine ? 7 : 12)) * big;
     }
   }
   skip() {
@@ -71,9 +75,11 @@ class BattleScene {
   update(dt) {
     this.t += dt;
     const fx = 640;
+    this.updateShots(dt);
     if (this.phase === 'advance') {
       for (const s of this.sprites) {
-        const tx = s.side === 0 ? s.hx + 250 : s.hx - 250;
+        const adv = s.role === 'ranged' ? 150 : s.role === 'siege' ? 60 : 250;
+        const tx = s.side === 0 ? s.hx + adv : s.hx - adv;
         s.x += (tx - s.x) * Math.min(1, dt * 1.6);
         s.y += (s.hy - s.y) * dt;
       }
@@ -96,9 +102,10 @@ class BattleScene {
       for (const s of this.sprites) {
         if (!s.alive) continue;
         s.ph += dt * 6;
-        const front = s.side === 0 ? fx - 30 : fx + 30;
+        const back = s.role === 'ranged' ? 150 : s.role === 'siege' ? 260 : 30;
+        const front = s.side === 0 ? fx - back : fx + back;
         const tx = s.side === 0 ? Math.min(front, s.hx + 300) : Math.max(front, s.hx - 300);
-        s.x += (tx - s.x) * dt * 1.2 + Math.sin(s.ph) * 0.6;
+        s.x += (tx - s.x) * dt * 1.2 + Math.sin(s.ph) * (s.role === 'siege' ? 0.1 : 0.6);
         s.y += Math.cos(s.ph * 0.7) * 0.5;
         s.a = (s.side ? Math.PI : 0) + Math.sin(s.ph * 0.5) * 0.4;
         if (Math.random() < dt * 0.8 && Math.abs(s.x - fx) < 80) {
@@ -113,6 +120,41 @@ class BattleScene {
     for (const s of this.sprites) if (!s.alive && s.dead < 1) s.dead += dt * 1.5;
     for (const p of this.particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 60 * dt; p.life -= dt; }
     this.particles = this.particles.filter(p => p.life > 0);
+  }
+  // ranged troops and siege engines fire at the enemy line
+  updateShots(dt) {
+    this.shots = this.shots || [];
+    if (this.phase !== 'end') for (const s of this.sprites) {
+      if (!s.alive || (s.role !== 'ranged' && s.role !== 'siege' && !(CASTES[s.caste].rng > 0))) continue;
+      s.fire -= dt;
+      if (s.fire > 0) continue;
+      const C = CASTES[s.caste], kind = shotKind(s.caste);
+      s.fire = (s.role === 'siege' ? 2.2 : kind === 'mg' ? 0.25 : kind === 'laser' ? 0.9 : 1.3) * (0.7 + Math.random() * 0.6);
+      const foes = this.sprites.filter(q => q.alive && q.side !== s.side);
+      if (!foes.length) continue;
+      const t = foes[Math.floor(Math.random() * Math.min(foes.length, 24))];
+      const fort = (this.b.kind === 'nest' || this.b.kind === 'outpost') && s.side === 0 && s.role === 'siege';
+      const tx = fort ? 1080 + (Math.random() - 0.5) * 80 : t.x + (Math.random() - 0.5) * 20, ty = fort ? 420 + (Math.random() - 0.5) * 40 : t.y + (Math.random() - 0.5) * 16;
+      const d = Math.hypot(tx - s.x, ty - s.y);
+      const speed = { stone: 420, bolt: 700, shot: 1600, mg: 1800, shell: 520, laser: 1e9, missile: 600 }[kind];
+      this.shots.push({ x0: s.x, y0: s.y, x1: tx, y1: ty, t: 0, dur: kind === 'laser' ? 0.18 : Math.max(0.08, d / speed), kind, side: s.side, arc: kind === 'stone' || kind === 'shell' || kind === 'missile' ? d * 0.25 : kind === 'bolt' ? d * 0.05 : 0, big: C.machine });
+      if (Math.random() < 0.08) Sound.sfx(kind === 'laser' ? 'spray' : 'clash', { pan: s.x / W * 2 - 1 });
+      if (kind !== 'laser') this.particles.push({ x: s.x + (s.side ? -16 : 16), y: s.y - 4, vx: (s.side ? -1 : 1) * 30, vy: -20, life: 0.25, col: kind === 'stone' ? 'rgba(220,200,160,0.5)' : 'rgba(255,230,170,0.85)', r: C.machine ? 6 : 3 });
+    }
+    for (const sh of this.shots) {
+      sh.t += dt;
+      if (sh.t >= sh.dur && !sh.hit) {
+        sh.hit = true;
+        const boom = sh.kind === 'shell' || sh.kind === 'missile';
+        for (let j = 0; j < (boom ? 10 : 3); j++) this.particles.push({ x: sh.x1, y: sh.y1, vx: (Math.random() - 0.5) * (boom ? 160 : 60), vy: -Math.random() * (boom ? 120 : 40), life: boom ? 0.7 : 0.35,
+          col: boom ? (j % 2 ? 'rgba(255,170,60,0.9)' : 'rgba(90,80,70,0.7)') : sh.kind === 'laser' ? 'rgba(140,240,255,0.9)' : 'rgba(220,200,160,0.6)', r: boom ? 7 : 3 });
+      }
+    }
+    this.shots = this.shots.filter(sh => sh.t < sh.dur + (sh.kind === 'laser' ? 0.05 : 0));
+  }
+  shotPos(sh) {
+    const k = Math.min(1, sh.t / sh.dur);
+    return [sh.x0 + (sh.x1 - sh.x0) * k, sh.y0 + (sh.y1 - sh.y0) * k, Math.sin(k * Math.PI) * sh.arc];
   }
   draw(ctx, dt) {
     const st = App.st, b = this.b;
@@ -150,21 +192,28 @@ class BattleScene {
       const sp = s.side === 0 ? this.A.species : this.D.species;
       drawAnt(ctx, sp, s.caste, s.x, s.y, s.a, this.len(s.caste), Math.floor(this.t * 14 + s.ph) % 6);
     }
+    for (const sh of this.shots || []) {
+      const [x, y, hgt] = this.shotPos(sh);
+      if (sh.kind === 'laser') { ctx.save(); ctx.strokeStyle = 'rgba(140,240,255,0.9)'; ctx.shadowColor = '#6ff'; ctx.shadowBlur = 10; ctx.lineWidth = sh.big ? 4 : 2; ctx.beginPath(); ctx.moveTo(sh.x0, sh.y0); ctx.lineTo(sh.x1, sh.y1); ctx.stroke(); ctx.restore(); continue; }
+      if (sh.kind === 'shot' || sh.kind === 'mg') { const k = Math.min(1, sh.t / sh.dur), k0 = Math.max(0, k - 0.12); ctx.strokeStyle = 'rgba(255,230,150,0.9)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(sh.x0 + (sh.x1 - sh.x0) * k0, sh.y0 + (sh.y1 - sh.y0) * k0); ctx.lineTo(x, y); ctx.stroke(); continue; }
+      ctx.fillStyle = sh.kind === 'bolt' ? '#d8c090' : sh.kind === 'stone' ? '#a8a49a' : '#3a3632';
+      ctx.beginPath(); ctx.arc(x, y - hgt, sh.kind === 'shell' || sh.big ? 4 : 2.5, 0, 6.28); ctx.fill();
+    }
     for (const p of this.particles) { ctx.globalAlpha = Math.min(1, p.life * 2); ctx.fillStyle = p.col; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 6.28); ctx.fill(); }
     ctx.globalAlpha = 1;
   }
-  len(caste) { return caste === 'major' ? 40 : caste === 'soldier' ? 30 : caste === 'scout' ? 24 : 22; }
+  len(caste) { const C = CASTE_SHAPE[caste]; return C && C.machine ? (caste === 'mech' ? 64 : caste === 'tank' ? 58 : 46) : caste === 'major' || caste === 'gunner' ? 40 : caste === 'rider' ? 44 : caste === 'scout' || caste === 'slinger' ? 24 : caste === 'worker' ? 22 : 30; }
   drawBanner(ctx, x, c, role, cur, start) {
     panel(ctx, x, 12, 400, 100, { border: c.color });
     text(ctx, role, x + 16, 22, { font: `bold 11px ${FONT_BODY}`, color: COL.dim });
     text(ctx, c.name, x + 16, 36, { font: `bold 20px ${FONT_HEAD}`, color: c.color });
     text(ctx, SPECIES[c.species].name, x + 384, 40, { font: `italic 13px ${FONT_HEAD}`, align: 'right', color: COL.dim });
     let bx = x + 16;
-    for (const k of CASTE_KEYS) {
-      if (!start[k]) continue;
-      drawAnt(ctx, c.species, k, bx + 10, 84, -0.5, 18, 0);
-      text(ctx, `${cur[k]}`, bx + 24, 76, { font: `bold 14px ${FONT_BODY}`, color: cur[k] < start[k] ? '#f0b090' : COL.text });
-      bx += 80;
+    const kinds = CASTE_KEYS.filter(k => start[k]).sort((a, b) => start[b] - start[a]).slice(0, 5);
+    for (const k of kinds) {
+      drawAnt(ctx, c.species, k, bx + 10, 84, -0.5, CASTES[k].machine ? 22 : 18, 0);
+      text(ctx, `${fmt(cur[k])}`, bx + 24, 76, { font: `bold 14px ${FONT_BODY}`, color: cur[k] < start[k] ? '#f0b090' : COL.text });
+      bx += 74;
     }
     bar(ctx, x + 16, 100, 368, 5, sumUnits(cur) / Math.max(1, sumUnits(start)), c.color);
   }
@@ -186,4 +235,12 @@ class BattleScene {
     if (b.plunder) text(ctx, `Plundered ${Math.round(b.plunder)} food${b.captured && b.captured !== 'outpost' ? `, captured ${b.captured} brood` : ''}`, W / 2, y + 116, { font: `14px ${FONT_BODY}`, align: 'center', color: COL.food });
     button(ctx, W / 2 - 80, y + h - 56, 160, 40, this.i < this.list.length - 1 ? 'Next battle' : 'Continue', () => this.next(), { primary: true });
   }
+}
+
+function shotKind(caste) {
+  const w = (CASTE_SHAPE[caste] || {}).weapon;
+  if (caste === 'catapult') return 'stone';
+  if (caste === 'cannon' || caste === 'artillery' || caste === 'tank') return 'shell';
+  if (caste === 'mech') return Math.random() < 0.5 ? 'laser' : 'missile';
+  return { sling: 'stone', crossbow: 'bolt', spear: 'bolt', musket: 'shot', rifle: 'shot', mg: 'mg', laser: 'laser' }[w] || 'stone';
 }

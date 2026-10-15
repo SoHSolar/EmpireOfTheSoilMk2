@@ -262,7 +262,9 @@ class MapScene {
     if (list.length < 2) return;
     const i = list.indexOf(playerCol(st));
     const c = list[(i + d + list.length) % list.length];
-    st.activeId = c.id; this.sel = { type: 'site', x: c.nest.x, y: c.nest.y }; this.centerOn(c.nest.x, c.nest.y);
+    st.activeId = c.id;
+    if ((c.world || 0) !== st.cw) { switchWorld(c.world || 0); return; }
+    this.sel = { type: 'site', x: c.nest.x, y: c.nest.y }; this.centerOn(c.nest.x, c.nest.y);
     Sound.sfx('tab');
   }
   endTurnClick() { if (!this.processing && !this.anim && !App.st.popups.length && !this.dialog) this.processing = 1; }
@@ -514,7 +516,7 @@ class MapScene {
       ctx.beginPath(); ctx.ellipse(sx, sy + ts * 0.1, Math.max(14, ts * 0.52), Math.max(10, ts * 0.36), 0, 0, 6.28); ctx.fill();
       ctx.strokeStyle = c.color; ctx.lineWidth = 2.5; ctx.stroke();
       const castes = [];
-      for (const k of ['major', 'soldier', 'scout', 'worker']) for (let i = 0; i < Math.ceil(n * (sw.units[k] || 0) / Math.max(1, tot)); i++) castes.push(k);
+      for (const k of swarmDrawOrder(sw)) for (let i = 0; i < Math.ceil(n * (sw.units[k] || 0) / Math.max(1, tot)); i++) castes.push(k);
       for (let i = 0; i < Math.min(n, castes.length); i++) {
         const r = mulberry32(sw.id * 13 + i);
         const ox = (r() - 0.5) * ts * 0.85, oy = (r() - 0.5) * ts * 0.55;
@@ -672,7 +674,8 @@ class MapScene {
     const si = seasonIdx(st.turn);
     text(ctx, dateStr(st.turn), 860, 8, { font: `bold 14px ${FONT_HEAD}`, color: ['#a8e07a', '#f2d24e', '#e8964a', '#bcd8f0'][si], align: 'right' });
     const land = playerColonies(st).reduce((a, c) => a + (c._tiles || 0), 0);
-    text(ctx, `Turn ${st.turn + 1}  •  ${Math.round(land / st.landTiles * 100)}% of land`, 860, 27, { font: `11px ${FONT_BODY}`, color: COL.dim, align: 'right' });
+    const RTe = playerRoot(st);
+    text(ctx, RTe.ascend ? `Turn ${st.turn + 1}  •  ${ERAS[eraOf(RTe)].name}` : `Turn ${st.turn + 1}  •  ${Math.round(land / st.landTiles * 100)}% of land`, 860, 27, { font: `11px ${FONT_BODY}`, color: COL.dim, align: 'right' });
     UI.tip(700, 0, 170, 46, `Seasons: Spring (more eggs), Summer (best foraging), Autumn, Winter (foraging & laying nearly stop).\nVictory: destroy all rivals or control 40% of the land.`);
     let bx = 880;
     button(ctx, bx, 7, 92, 32, 'Colony', () => App.setScene(new ColonyScene()), { key: 'C' }); bx += 98;
@@ -685,6 +688,10 @@ class MapScene {
     // end turn
     button(ctx, W - 196, H - 66, 182, 52, 'End Turn', () => this.endTurnClick(), { primary: true, size: 18, key: 'Space' });
     const ready = st.swarms.filter(s => isMine(st, s.owner) && s.mp > 0 && !s.path.length).length;
+    if (st.worlds.length > 1 || st.voyages.length) {
+      const enRoute = st.voyages.filter(v => isMine(st, v.owner)).length;
+      button(ctx, W - 196, H - (cols.length > 1 ? 212 : 176), 182, 30, `Worlds: ${worldName(st, st.cw)}${enRoute ? ` (${enRoute} ship${enRoute > 1 ? 's' : ''} en route)` : ''}`, () => { this.dialog = new WorldsDialog(this); }, { size: 12, tip: 'See every world your ants know of, and travel between them.' });
+    }
     if (cols.length > 1) {
       button(ctx, W - 196, H - 176, 30, 30, '\u25C0', () => this.cycleColony(-1), { size: 12, tip: 'Previous colony ( [ )' });
       ctx.font = `bold 12px ${FONT_BODY}`;
@@ -693,7 +700,7 @@ class MapScene {
       button(ctx, W - 44, H - 176, 30, 30, '\u25B6', () => this.cycleColony(1), { size: 12, tip: 'Next colony ( ] )' });
     }
     button(ctx, W - 196, H - 104, 182, 32, ready ? `Next swarm (${ready} ready)` : 'Next swarm', () => this.nextSwarm(), { size: 13, key: 'N' });
-    button(ctx, W - 196, H - 140, 64, 30, 'Home', () => this.centerOn(p.nest.x, p.nest.y), { size: 12, key: 'H' });
+    button(ctx, W - 196, H - 140, 64, 30, 'Home', () => { if ((p.world || 0) !== st.cw) switchWorld(p.world || 0); else this.centerOn(p.nest.x, p.nest.y); }, { size: 12, key: 'H' });
     button(ctx, W - 126, H - 140, 36, 30, Sound.settings.muted ? '\u266A\u0338' : '\u266A', () => { this.dialog = new SoundDialog(() => this.dialog = null); }, { size: 15, tip: 'Sound settings (F9 mutes)' });
     button(ctx, W - 84, H - 140, 34, 30, '+', () => this.onWheel(W / 2, H / 2, -1), { size: 16 });
     button(ctx, W - 48, H - 140, 34, 30, '-', () => this.onWheel(W / 2, H / 2, 1), { size: 16 });
@@ -711,7 +718,9 @@ class MapScene {
     if (s.type === 'swarm' || s.type === 'enemy') {
       const sw = st.swarms.find(q => q.id === s.id); if (!sw) return;
       const c = colById(st, sw.owner), mine = isMine(st, sw.owner);
-      const h = mine ? 340 + (sw.queens ? 22 : 0) : 210;
+      const kinds = CASTE_KEYS.filter(k => sw.units[k] > 0).sort((a, b) => sw.units[b] - sw.units[a]);
+      const shown = kinds.slice(0, kinds.length > 6 ? 5 : 6), rows = Math.max(2, shown.length + (kinds.length > shown.length ? 1 : 0));
+      const h = (mine ? 288 + (sw.queens ? 22 : 0) : 158) + rows * 26;
       panel(ctx, x, y, w, h, { title: mine ? (playerColonies(st).length > 1 ? `Swarm of ${c.name}` : 'Your Swarm') : `${c.name} Swarm` });
       let yy = y + 46;
       if (sw.queens) {
@@ -719,12 +728,13 @@ class MapScene {
         text(ctx, `${sw.queens} mated queen${sw.queens > 1 ? 's' : ''}`, x + 50, yy + 2, { font: `bold 14px ${FONT_BODY}`, color: COL.gold });
         yy += 26;
       }
-      for (const k of CASTE_KEYS) {
-        if (!sw.units[k]) continue;
-        drawAnt(ctx, c.species, k, x + 26, yy + 10, -0.4, k === 'major' ? 26 : 20, 0);
-        text(ctx, `${sw.units[k]} ${CASTES[k].name}`, x + 50, yy + 2, { font: `14px ${FONT_BODY}` });
+      for (const k of shown) {
+        drawAnt(ctx, c.species, k, x + 26, yy + 10, -0.4, k === 'major' || CASTES[k].machine ? 26 : 20, 0);
+        text(ctx, `${fmt(sw.units[k])} ${CASTES[k].name}`, x + 50, yy + 2, { font: `14px ${FONT_BODY}` });
         yy += 26;
       }
+      if (kinds.length > shown.length) { const rest = kinds.slice(shown.length); text(ctx, `+ ${fmt(rest.reduce((a, k) => a + sw.units[k], 0))} others (${rest.length} kinds)`, x + 50, yy + 2, { font: `13px ${FONT_BODY}`, color: COL.dim }); yy += 26; }
+      if (shown.length < 2) yy += 26 * (2 - shown.length);
       const pw = power(st, c, sw.units);
       text(ctx, `Strength ${fmt(pw)}`, x + 16, yy + 4, { font: `bold 13px ${FONT_BODY}`, color: '#f0b080' });
       if (mine) {
@@ -781,7 +791,8 @@ class MapScene {
       const site = siteAt(st, s.x, s.y); if (!site) { this.sel = { type: 'tile', x: s.x, y: s.y }; return; }
       const c = site.col, mine = isMine(st, c.id);
       if (mine && site.kind === 'nest') {
-        panel(ctx, x, y, w, 276, { title: `${c.name} - ${isRoot(c) ? 'Home Nest' : 'Sister Colony'}` });
+        const ships = c.ascend && has(c, 'colony_ships');
+        panel(ctx, x, y, w, ships ? 318 : 276, { title: `${c.name} - ${isRoot(c) ? 'Home Nest' : 'Sister Colony'}` });
         let yy = y + 48;
         const line = (a, b, col) => { text(ctx, a, x + 16, yy, { font: `13px ${FONT_BODY}`, color: COL.dim }); text(ctx, b, x + w - 16, yy, { font: `bold 13px ${FONT_BODY}`, align: 'right', color: col || COL.text }); yy += 20; };
         line('Queen', 'alive and laying', COL.good);
@@ -795,6 +806,7 @@ class MapScene {
         const ferr = canNuptialFlight(st, c), nq = flightQueens(st, c);
         button(ctx, x + 12, y + 230, 266, 34, `Nuptial Flight (${nq} quee${nq > 1 ? 'ns' : 'n'})`, () => { st.activeId = c.id; this.doFlight(c); }, {
           disabled: !!ferr, tip: ferr || `Release winged princesses and males (${flightCost(st, c).food} food). Mated queens come down with an escort of workers - march them to open land and found sister colonies. This is how ant empires spread.` });
+        if (ships) button(ctx, x + 12, y + 272, 266, 34, 'Launch Spacecraft...', () => { st.activeId = c.id; this.dialog = new LaunchDialog(this, c); }, { primary: true, tip: 'Send a colony ship or a troop ship to another world.' });
       } else if (mine) {
         const o = site.outpost;
         panel(ctx, x, y, w, 190, { title: 'Satellite Nest' });
@@ -807,7 +819,7 @@ class MapScene {
         }, { tip: 'Leaves 5 workers behind to keep the outpost.' });
       } else {
         const known = playerRoot(st).met[facId(st, c.id)];
-        panel(ctx, x, y, w, 196, { title: site.kind === 'nest' ? `${c.name} Nest` : `${c.name} Outpost` });
+        panel(ctx, x, y, w, 218, { title: site.kind === 'nest' ? `${c.name} Nest` : `${c.name} Outpost` });
         let yy = y + 48;
         drawAnt(ctx, c.species, 'soldier', x + 40, yy + 26, -0.5, 46, Math.floor(this.t * 4) % 6);
         text(ctx, SPECIES[c.species].name, x + 80, yy + 4, { font: `bold 14px ${FONT_HEAD}`, color: c.color });
@@ -817,7 +829,11 @@ class MapScene {
         text(ctx, war ? 'Status: AT WAR' : `Status: peace${routeBetween(st, st.playerId, c.id) ? ' (trading)' : ''}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: war ? COL.bad : COL.good }); yy += 20;
         if (known && rel) text(ctx, `Opinion of you: ${Math.round(rel.score)}${isRoot(c) ? '' : '  (sister of ' + facRoot(st, c.id).name + ')'}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: COL.dim }); yy += 20;
         if (st.visible[idx(st, s.x, s.y)]) text(ctx, site.kind === 'nest' ? `Estimated defenders: ~${fmt(Math.round(sumUnits(c.adults) / 10) * 10)}` : `Garrison: ~${sumUnits(site.outpost.units) + 4}`, x + 16, yy, { font: `13px ${FONT_BODY}`, color: '#f0b080' });
-        button(ctx, x + 12, y + 154, 266, 32, 'Diplomacy', () => App.setScene(new DiplomacyScene(facId(st, c.id))));
+        yy += 20;
+        const fm = facMembers(st, c.id), nOut = fm.reduce((a, m) => a + m.outposts.length, 0);
+        text(ctx, `Colony has ${fm.length} nest${fm.length > 1 ? 's' : ''} and ${nOut} outpost${nOut === 1 ? '' : 's'}${has(c, 'polygyny') && nOut ? ' (can relocate)' : ''}`, x + 16, yy, { font: `12px ${FONT_BODY}`, color: COL.dim });
+        UI.tip(x + 16, yy, w - 32, 16, 'To wipe a colony out you must destroy every one of its nests. Colonies with Polygyny can move their queen to a well-garrisoned outpost once a year when their nest falls - raze the outposts first.');
+        button(ctx, x + 12, y + 176, 266, 32, 'Diplomacy', () => App.setScene(new DiplomacyScene(facId(st, c.id))));
       }
       return;
     }
@@ -923,6 +939,7 @@ class MapScene {
       '4. Grow big, then hold a NUPTIAL FLIGHT in spring: mated queens can found SISTER COLONIES across the map.',
       '5. Watch your food. Every ant eats, and winter nearly stops foraging - fill the granary in autumn.',
     ];
+    if (p.ascend) tips[4] = '5. ASCENSION: research the gateway technology of each age (Research screen tabs) to advance from stone tools to starships.';
     let yy = y + 210;
     for (const t of tips) yy += wrap(ctx, t, x + 40, yy, w - 80, 19, { font: `14px ${FONT_BODY}`, color: '#e8dcc0' }) + 6;
     button(ctx, W / 2 - 100, y + h - 58, 200, 42, 'Begin', () => this.showIntro = false, { primary: true, size: 17 });
@@ -991,34 +1008,37 @@ class MusterDialog {
   constructor(scene, fromColony) {
     this.scene = scene; this.fromColony = fromColony;
     const p = playerCol(App.st);
-    this.u = { worker: 0, soldier: Math.floor(p.adults.soldier * 0.75), major: Math.floor(p.adults.major * 0.75), scout: p.adults.scout };
+    this.u = U();
+    for (const k of CASTE_KEYS) if (k !== 'worker') this.u[k] = k === 'scout' ? p.adults.scout : Math.floor(p.adults[k] * 0.75);
     if (sumUnits(this.u) === 0) this.u.worker = Math.min(12, Math.floor(p.adults.worker / 2));
   }
   close() { if (this.fromColony) this.fromColony.dialog = null; else this.scene.dialog = null; }
   draw(ctx) {
     const st = App.st, p = playerCol(st);
     modalBackdrop(ctx);
-    const w = 520, h = 400, x = W / 2 - w / 2, y = H / 2 - h / 2;
-    panel(ctx, x, y, w, h, { title: 'Muster a Swarm' });
-    text(ctx, `Choose which ants leave ${p.name}. +/- move 5% at a time (Shift for single ants).`, x + 20, y + 48, { font: `13px ${FONT_BODY}`, color: COL.dim });
-    let yy = y + 80;
-    for (const k of CASTE_KEYS) {
+    const list = castesShown(p).filter(k => !CASTES[k].asc || p.adults[k] > 0 || casteUnlocked(p, k));
+    const two = list.length > 5, perCol = two ? Math.ceil(list.length / 2) : list.length, rowH = two ? 44 : 50;
+    const w = two ? 960 : 520, h = Math.max(400, 180 + perCol * rowH), x = W / 2 - w / 2, y = H / 2 - h / 2;
+    panel(ctx, x, y, w, h, { title: `Muster a Swarm from ${p.name}` });
+    text(ctx, `+/- move 5% at a time (Shift for single ants).`, x + 20, y + 48, { font: `13px ${FONT_BODY}`, color: COL.dim });
+    list.forEach((k, i) => {
+      const cx = x + (two && i >= perCol ? 480 : 0), yy = y + 76 + (two ? i % perCol : i) * rowH;
       const avail = p.adults[k], locked = !casteUnlocked(p, k);
-      drawAnt(ctx, p.species, k, x + 36, yy + 12, -0.4, k === 'major' ? 30 : 24, 0, locked ? 0.3 : 1);
-      text(ctx, CASTES[k].name, x + 66, yy + 4, { font: `bold 14px ${FONT_BODY}`, color: locked ? COL.faint : COL.text });
-      text(ctx, locked ? `requires ${TECHS[CASTES[k].req].name}` : `${fmt(avail)} in nest`, x + 66, yy + 22, { font: `11px ${FONT_BODY}`, color: COL.dim });
+      drawAnt(ctx, p.species, k, cx + 36, yy + 12, -0.4, k === 'major' || CASTES[k].machine ? 28 : 24, 0, locked ? 0.3 : 1);
+      text(ctx, CASTES[k].name, cx + 66, yy + 2, { font: `bold 14px ${FONT_BODY}`, color: locked ? COL.faint : COL.text });
+      text(ctx, locked ? `requires ${TECHS[CASTES[k].req].name}` : `${fmt(avail)} in nest`, cx + 66, yy + 20, { font: `11px ${FONT_BODY}`, color: COL.dim });
+      UI.tip(cx + 20, yy, 200, 36, CASTES[k].desc);
       const step = () => App.keys['shift'] ? 1 : Math.max(1, Math.round(avail / 20));
-      button(ctx, x + 250, yy + 4, 30, 28, '-', () => this.u[k] = Math.max(0, this.u[k] - step()), { disabled: locked });
-      text(ctx, fmt(this.u[k]), x + 315, yy + 10, { font: `bold 15px ${FONT_BODY}`, align: 'center' });
-      button(ctx, x + 350, yy + 4, 30, 28, '+', () => this.u[k] = Math.min(avail, this.u[k] + step()), { disabled: locked });
-      button(ctx, x + 390, yy + 4, 34, 28, 'All', () => this.u[k] = avail, { disabled: locked, size: 11 });
-      button(ctx, x + 428, yy + 4, 34, 28, '½', () => this.u[k] = Math.floor(avail / 2), { disabled: locked, size: 13 });
-      button(ctx, x + 466, yy + 4, 40, 28, 'None', () => this.u[k] = 0, { disabled: locked, size: 11 });
-      yy += 50;
-    }
+      button(ctx, cx + 230, yy + 4, 30, 28, '-', () => this.u[k] = Math.max(0, this.u[k] - step()), { disabled: locked });
+      text(ctx, fmt(this.u[k]), cx + 293, yy + 10, { font: `bold 15px ${FONT_BODY}`, align: 'center' });
+      button(ctx, cx + 326, yy + 4, 30, 28, '+', () => this.u[k] = Math.min(avail, this.u[k] + step()), { disabled: locked });
+      button(ctx, cx + 362, yy + 4, 34, 28, 'All', () => this.u[k] = avail, { disabled: locked, size: 11 });
+      button(ctx, cx + 400, yy + 4, 30, 28, '½', () => this.u[k] = Math.floor(avail / 2), { disabled: locked, size: 13 });
+      button(ctx, cx + 434, yy + 4, 38, 28, 'None', () => this.u[k] = 0, { disabled: locked, size: 11 });
+    });
     const pw = power(st, p, this.u);
     const tmp = { owner: p.id, units: this.u };
-    text(ctx, `Strength ${fmt(pw)}   •   Movement ${sumUnits(this.u) ? swarmMaxMP(st, tmp) : '-'}   •   ${this.u.worker >= 10 ? 'can found an outpost' : 'needs 10 workers to found an outpost'}`, x + 20, yy + 6, { font: `13px ${FONT_BODY}`, color: '#f0b080' });
+    text(ctx, `Strength ${fmt(pw)}   •   Movement ${sumUnits(this.u) ? swarmMaxMP(st, tmp) : '-'}   •   ${this.u.worker >= 10 ? 'can found an outpost' : 'needs 10 workers to found an outpost'}`, x + 20, y + 80 + perCol * rowH, { font: `13px ${FONT_BODY}`, color: '#f0b080' });
     button(ctx, x + w - 290, y + h - 54, 130, 38, 'March Out', () => {
       const sw = musterSwarm(st, p, this.u);
       if (!sw) { App.toast('Choose at least one ant.', COL.bad); return; }
@@ -1032,4 +1052,96 @@ class MusterDialog {
     button(ctx, x + w - 150, y + h - 54, 130, 38, 'Cancel', () => this.close());
   }
   onKey(e) { if (e.key === 'Escape') this.close(); }
+}
+
+// ---------------------------------------------------------------------
+function switchWorld(i) {
+  const st = App.st;
+  if (i === st.cw || !st.worlds[i]) return;
+  setWorld(st, i); st.viewWorld = i;
+  const mine = playerColonies(st).find(c => (c.world || 0) === i);
+  if (mine) st.activeId = mine.id;
+  recompute(st);
+  App.terrain = new TerrainRenderer(st);
+  rebuildMapScene();
+  const sc = App.mapScene, sw = st.swarms.find(s => isMine(st, s.owner));
+  if (mine) { sc.centerOn(mine.nest.x, mine.nest.y); sc.sel = { type: 'site', x: mine.nest.x, y: mine.nest.y }; }
+  else if (sw) { sc.centerOn(sw.x, sw.y); sc.sel = { type: 'swarm', id: sw.id }; }
+  else sc.sel = null;
+  sc.updateMood(true);
+  App.toast(`${worldName(st, i)}: ${WORLD_KINDS[st.worlds[i].kind].desc}`);
+}
+
+class WorldsDialog {
+  constructor(scene) { this.scene = scene; }
+  draw(ctx) {
+    const st = App.st;
+    modalBackdrop(ctx);
+    const w = 760, rows = st.worlds.length, h = 140 + rows * 92 + (st.voyages.length ? 30 + st.voyages.length * 20 : 0), x = W / 2 - w / 2, y = H / 2 - h / 2;
+    panel(ctx, x, y, w, h, { title: 'Worlds' });
+    let yy = y + 52;
+    st.worlds.forEach((Wd, i) => {
+      const K = WORLD_KINDS[Wd.kind], here = i === st.cw;
+      roundRect(ctx, x + 16, yy, w - 32, 84, 8); ctx.fillStyle = here ? 'rgba(217,164,65,0.16)' : 'rgba(0,0,0,0.3)'; ctx.fill();
+      ctx.strokeStyle = here ? COL.gold : 'rgba(120,90,50,0.5)'; ctx.stroke();
+      const g = ctx.createRadialGradient(x + 56, yy + 36, 4, x + 62, yy + 42, 30);
+      g.addColorStop(0, '#fff'); g.addColorStop(0.25, K.icon); g.addColorStop(1, shade(K.icon, 0.35));
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x + 62, yy + 42, 28, 0, 6.28); ctx.fill();
+      text(ctx, K.name, x + 106, yy + 10, { font: `bold 18px ${FONT_HEAD}`, color: here ? COL.gold : COL.text });
+      ctx.font = `12px ${FONT_BODY}`;
+      text(ctx, K.desc, x + 106, yy + 34, { font: `12px ${FONT_BODY}`, color: COL.dim });
+      const mine = playerColonies(st).filter(c => (c.world || 0) === i);
+      const others = (st.allCols || st.colonies).filter(c => c.alive && (c.world || 0) === i && !isMine(st, c.id));
+      const pop = mine.reduce((a, c) => a + population(st, c), 0);
+      text(ctx, `Your colonies: ${mine.length}${mine.length ? ` (${fmt(pop)} ants)` : ''}   •   Other nests: ${others.length}${others.some(c => c.alien) ? ' (alien)' : ''}`, x + 106, yy + 56, { font: `12px ${FONT_BODY}`, color: mine.length ? COL.good : COL.dim });
+      if (!here) button(ctx, x + w - 136, yy + 24, 100, 34, 'Travel', () => { this.scene.dialog = null; switchWorld(i); }, { primary: !!mine.length, disabled: !mine.length && !(Wd.swarms || []).some(s => isMine(st, s.owner)), tip: 'View this world.' });
+      else text(ctx, 'You are here', x + w - 86, yy + 34, { font: `bold 12px ${FONT_BODY}`, align: 'center', color: COL.gold });
+      yy += 92;
+    });
+    if (st.voyages.length) {
+      text(ctx, 'Ships in flight', x + 20, yy + 4, { font: `bold 14px ${FONT_BODY}`, color: COL.gold }); yy += 26;
+      for (const v of st.voyages) {
+        const c = colById(st, v.owner), mineV = isMine(st, v.owner);
+        text(ctx, `${mineV ? 'Your' : c ? c.name + "'s" : 'A'} ${v.kind} ship to ${WORLD_KINDS[v.dest].name} - arrives in ${Math.max(1, v.arrive - st.turn)} turn${v.arrive - st.turn > 1 ? 's' : ''} (${fmt(sumUnits(v.units))} ants)`, x + 30, yy, { font: `12px ${FONT_BODY}`, color: mineV ? COL.text : '#f0a080' });
+        yy += 20;
+      }
+    }
+    button(ctx, x + w - 136, y + h - 52, 116, 36, 'Close', () => this.scene.dialog = null, { primary: true });
+  }
+  onKey(e) { if (e.key === 'Escape') this.scene.dialog = null; }
+}
+
+class LaunchDialog {
+  constructor(scene, c) { this.scene = scene; this.c = c; this.kind = 'colony'; this.dest = WORLD_KEYS.find(k => k !== App.st.worlds[c.world || 0].kind); }
+  draw(ctx) {
+    const st = App.st, c = this.c;
+    modalBackdrop(ctx);
+    const w = 640, h = 470, x = W / 2 - w / 2, y = H / 2 - h / 2;
+    panel(ctx, x, y, w, h, { title: `Launch Spacecraft from ${c.name}` });
+    text(ctx, 'Ship', x + 24, y + 56, { font: `bold 14px ${FONT_BODY}`, color: COL.gold });
+    const K = SHIP_COST;
+    button(ctx, x + 24, y + 78, 284, 64, 'Colony Ship', () => this.kind = 'colony', { active: this.kind === 'colony', tip: `Carries a young queen, ${K.colony.workers} workers and 15% of the nest's soldiers to found a new sister colony on another world.` });
+    button(ctx, x + 330, y + 78, 284, 64, 'Troop Ship', () => this.kind = 'troop', { active: this.kind === 'troop', tip: 'Carries 80% of the nest\'s soldiers and machines to another world, where they land as a swarm ready to attack.' });
+    text(ctx, `${K.colony.mat} materials, ${K.colony.food} food, ${K.colony.workers} workers`, x + 166, y + 150, { font: `11px ${FONT_BODY}`, align: 'center', color: COL.dim });
+    text(ctx, `${K.troop.mat} materials, ${K.troop.food} food, most of your army`, x + 472, y + 150, { font: `11px ${FONT_BODY}`, align: 'center', color: COL.dim });
+    text(ctx, 'Destination', x + 24, y + 180, { font: `bold 14px ${FONT_BODY}`, color: COL.gold });
+    let yy = y + 204;
+    for (const k of WORLD_KEYS) {
+      if (k === st.worlds[c.world || 0].kind) continue;
+      const Wk = WORLD_KINDS[k], known = worldOfKind(st, k) >= 0;
+      button(ctx, x + 24, yy, w - 48, 44, `${Wk.name}  -  ${Wk.travel || 3} turns${known ? '' : '  (uncharted)'}`, () => this.dest = k, { active: this.dest === k, size: 13, tip: Wk.desc });
+      yy += 50;
+    }
+    const err = canLaunchShip(st, c, this.kind);
+    if (err) text(ctx, err, x + 24, y + h - 84, { font: `bold 13px ${FONT_BODY}`, color: COL.bad });
+    else text(ctx, `Ready for launch. Have: ${fmt(c.materials)} materials, ${fmt(c.food)} food.`, x + 24, y + h - 84, { font: `13px ${FONT_BODY}`, color: COL.good });
+    button(ctx, x + w - 290, y + h - 54, 130, 38, 'Launch!', () => {
+      const e = launchShip(st, c, this.kind, this.dest);
+      if (e) { App.toast(e, COL.bad); return; }
+      Sound.sfx('victory'); this.scene.dialog = null;
+      App.toast(`The ${this.kind} ship roars into the sky, bound for ${WORLD_KINDS[this.dest].name}.`, COL.good);
+    }, { primary: true, disabled: !!err });
+    button(ctx, x + w - 150, y + h - 54, 130, 38, 'Cancel', () => this.scene.dialog = null);
+  }
+  onKey(e) { if (e.key === 'Escape') this.scene.dialog = null; }
 }

@@ -66,6 +66,34 @@ class MeshB {
     }
     return this;
   }
+  // axis-aligned box (optionally yawed about its centre)
+  box(cx, cy, cz, sx, sy, sz, col, yaw = 0) {
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const rot = (x, z) => [x * c - z * s, x * s + z * c];
+    const F = [[[1, 0, 0], [0, 0, 1], [0, 1, 0]], [[-1, 0, 0], [0, 0, -1], [0, 1, 0]], [[0, 1, 0], [1, 0, 0], [0, 0, 1]], [[0, -1, 0], [1, 0, 0], [0, 0, -1]], [[0, 0, 1], [-1, 0, 0], [0, 1, 0]], [[0, 0, -1], [1, 0, 0], [0, 1, 0]]];
+    const H = [sx / 2, sy / 2, sz / 2];
+    for (const [n, u, v] of F) {
+      const base = this.vcount;
+      for (const [a, bb] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const lx = n[0] * H[0] + u[0] * a * H[0] + v[0] * bb * H[0], ly = n[1] * H[1] + u[1] * a * H[1] + v[1] * bb * H[1], lz = n[2] * H[2] + u[2] * a * H[2] + v[2] * bb * H[2];
+        const [rx, rz] = rot(lx, lz), [nx, nz] = rot(n[0], n[2]);
+        this.v(cx + rx, cy + ly, cz + rz, nx, n[1], nz, col[0], col[1], col[2]);
+      }
+      this.tri(base, base + 2, base + 1); this.tri(base, base + 3, base + 2);
+      this.tri(base, base + 1, base + 2); this.tri(base, base + 2, base + 3);
+    }
+    return this;
+  }
+  // copy another mesh in, transformed by f(x,y,z) -> [x,y,z] (rotation part applied to normals with fn)
+  append(o, f, fn) {
+    const base = this.vcount;
+    for (let i = 0; i < o.p.length; i += 3) {
+      const p = f(o.p[i], o.p[i + 1], o.p[i + 2]), n = (fn || f)(o.n[i], o.n[i + 1], o.n[i + 2]);
+      this.v(p[0], p[1], p[2], n[0], n[1], n[2], o.c[i], o.c[i + 1], o.c[i + 2], o.t[(i / 3) * 2], o.t[(i / 3) * 2 + 1]);
+    }
+    for (const k of o.i) this.i.push(base + k);
+    return this;
+  }
   quadXZ(x0, z0, x1, z1, y, col, uv = [0, 0, 1, 1]) {
     const b = this.vcount;
     this.v(x0, y, z0, 0, 1, 0, ...col, uv[0], uv[1]); this.v(x1, y, z0, 0, 1, 0, ...col, uv[2], uv[1]);
@@ -90,7 +118,10 @@ const rgbf = hex => hexToRgb(hex).map(v => v / 255);
 const Models = {
   cache: new Map(),
   get(key, fn) { let m = this.cache.get(key); if (!m) { m = GL3D.mesh(fn().build()); this.cache.set(key, m); } return m; },
-  ant(species, caste, frame, lod = 0) { return this.get(`ant|${species}|${caste}|${frame % ANT3D_FRAMES}|${lod}`, () => buildAnt(species, caste, frame % ANT3D_FRAMES, lod)); },
+  ant(species, caste, frame, lod = 0) {
+    const cs = CASTE_SHAPE[caste] || {};
+    return this.get(`ant|${species}|${caste}|${frame % ANT3D_FRAMES}|${lod}`, () => cs.machine ? buildMachine(species, cs.machine, frame % ANT3D_FRAMES, lod) : cs.mount ? buildRider(species, caste, frame % ANT3D_FRAMES, lod) : buildAnt(species, caste, frame % ANT3D_FRAMES, lod));
+  },
 };
 const ANT3D_FRAMES = 12;
 
@@ -242,6 +273,119 @@ function buildAnt(species, caste, frame, lod = 0) {
       p = q2;
     }
     if (hi) b.tube(foot, [foot[0] + dirx * 0.018 * L, 0.001, foot[2] + dirz * 0.018 * L], 0.004 * L, 0.001 * L, [0.08, 0.06, 0.05], { seg: 3 });
+  }
+  if (cs.helm || cs.weapon) antGear(b, cs, L, hx, hy, headR, bodyY + bob, phase);
+  return b;
+}
+// helmets, armour and weapons of the later ages
+function antGear(b, cs, L, hx, hy, headR, by, phase) {
+  const HC = { bronze: [0.82, 0.52, 0.2], iron: [0.52, 0.55, 0.6], tricorn: [0.1, 0.08, 0.07], brodie: [0.42, 0.46, 0.34], steel: [0.36, 0.4, 0.38], visor: [0.9, 0.92, 0.95] };
+  if (cs.helm) {
+    const c = HC[cs.helm];
+    if (cs.helm === 'tricorn') { b.ellipsoid(hx - headR * 0.1, hy + headR * 0.7, 0, headR * 1.1, headR * 0.18, headR * 1.1, c, { seg: 10, ring: 5, noise: 0 }); b.ellipsoid(hx - headR * 0.1, hy + headR * 0.9, 0, headR * 0.6, headR * 0.35, headR * 0.6, c, { seg: 10, ring: 6, noise: 0 }); }
+    else if (cs.helm === 'brodie') { b.ellipsoid(hx - headR * 0.1, hy + headR * 0.62, 0, headR * 1.15, headR * 0.12, headR * 1.15, c, { seg: 12, ring: 5, noise: 0 }); b.ellipsoid(hx - headR * 0.1, hy + headR * 0.7, 0, headR * 0.7, headR * 0.4, headR * 0.75, c, { seg: 10, ring: 6, noise: 0 }); }
+    else b.ellipsoid(hx - headR * 0.15, hy + headR * 0.35, 0, headR * 1.0, headR * 0.72, headR * 1.02, c, { seg: 12, ring: 8, noise: 0.02, flatBottom: 0.1 });
+    if (cs.helm === 'visor') {
+      b.ellipsoid(hx + headR * 0.55, hy + headR * 0.2, 0, headR * 0.35, headR * 0.3, headR * 0.85, [0.5, 2.2, 2.6], { seg: 10, ring: 6, noise: 0 });   // glowing visor
+      b.ellipsoid(0.03 * L, by + 0.05 * L, 0, 0.12 * L, 0.06 * L, 0.08 * L, [0.88, 0.9, 0.93], { seg: 12, ring: 6, noise: 0 });                     // chest armour
+    }
+    if (cs.helm === 'bronze') b.ellipsoid(hx - headR * 0.4, hy + headR * 1.1, 0, headR * 0.7, headR * 0.25, headR * 0.12, [0.75, 0.15, 0.1], { seg: 8, ring: 5, noise: 0 });   // crest
+  }
+  const w = cs.weapon;
+  if (!w) return;
+  const sz = 0.07 * L, y0 = by + 0.11 * L, sw = Math.sin(phase * 2) * 0.01 * L;
+  const along = (x0, x1, r0, r1, col, y = y0, z = sz) => b.tube([x0 * L, y + sw, z], [x1 * L, y + 0.02 * L + sw, z], r0 * L, r1 * L, col, { seg: 6, cap: true });
+  if (w === 'sling') { b.tube([0.05 * L, y0, sz], [0.25 * L, y0 + 0.12 * L, sz], 0.006 * L, 0.006 * L, [0.72, 0.6, 0.38], { seg: 4 }); b.ellipsoid(0.25 * L, y0 + 0.12 * L, sz, 0.03 * L, 0.03 * L, 0.03 * L, [0.6, 0.6, 0.56], { seg: 8, ring: 5 }); }
+  if (w === 'spear') {
+    along(-0.3, 0.95, 0.012, 0.01, [0.45, 0.3, 0.16]);
+    b.ellipsoid(1.0 * L, y0 + 0.02 * L + sw, sz, 0.07 * L, 0.018 * L, 0.018 * L, [0.9, 0.6, 0.24], { seg: 8, ring: 5, noise: 0 });
+    b.ellipsoid(0.05 * L, by + 0.1 * L, -0.12 * L, 0.13 * L, 0.15 * L, 0.025 * L, [0.82, 0.52, 0.2], { seg: 14, ring: 8, noise: 0 });   // round bronze shield
+  }
+  if (w === 'crossbow') { along(-0.1, 0.45, 0.018, 0.016, [0.4, 0.26, 0.14]); b.tube([0.4 * L, y0 + 0.02 * L, sz - 0.14 * L], [0.4 * L, y0 + 0.02 * L, sz + 0.14 * L], 0.01 * L, 0.01 * L, [0.3, 0.2, 0.1], { seg: 5 }); }
+  if (w === 'musket') { along(-0.2, 0.25, 0.024, 0.02, [0.42, 0.26, 0.14]); along(0.2, 0.85, 0.012, 0.011, [0.3, 0.3, 0.3]); }
+  if (w === 'rifle') { along(-0.15, 0.2, 0.024, 0.02, [0.36, 0.24, 0.14]); along(0.18, 0.7, 0.011, 0.01, [0.16, 0.16, 0.16]); b.box(0.12 * L, y0 - 0.03 * L, sz, 0.05 * L, 0.06 * L, 0.025 * L, [0.15, 0.15, 0.15]); }
+  if (w === 'mg') { along(-0.1, 0.25, 0.04, 0.04, [0.2, 0.22, 0.2]); along(0.25, 0.75, 0.018, 0.018, [0.12, 0.12, 0.12]); b.box(0.05 * L, y0 - 0.04 * L, sz + 0.05 * L, 0.1 * L, 0.08 * L, 0.06 * L, [0.32, 0.3, 0.2]); }
+  if (w === 'laser') { along(-0.1, 0.35, 0.03, 0.028, [0.85, 0.88, 0.92]); along(0.35, 0.7, 0.014, 0.012, [0.5, 2.4, 2.8]); b.box(0.15 * L, y0 + 0.035 * L, sz, 0.12 * L, 0.02 * L, 0.04 * L, [0.4, 1.8, 2.2]); }
+}
+// a knight on a tamed ground beetle
+function buildRider(species, caste, frame, lod) {
+  const b = new MeshB(), look = SPECIES[species].look;
+  const beetle = buildBeetle(), ph = frame / ANT3D_FRAMES * 6.28;
+  const sc = 1.15, lift = Math.abs(Math.sin(ph)) * 0.02;
+  b.append(beetle, (x, y, z) => [x * sc, y * sc + lift, z * sc], (x, y, z) => [x, y, z]);
+  // saddle in the colony's colour
+  b.ellipsoid(0, 0.36 + lift, 0, 0.22, 0.05, 0.24, rgbf(look.thorax).map(v => v * 0.8), { seg: 10, ring: 5, noise: 0 });
+  const rider = buildAnt(species, caste, (frame + 3) % ANT3D_FRAMES, lod);
+  const rs = 0.62;
+  b.append(rider, (x, y, z) => [x * rs - 0.02, y * rs + 0.32 + lift, z * rs], (x, y, z) => [x, y, z]);
+  // lance
+  b.tube([-0.1, 0.5 + lift, 0.14], [1.2, 0.62 + lift, 0.14], 0.012, 0.008, [0.5, 0.36, 0.2], { seg: 5 });
+  b.ellipsoid(1.24, 0.62 + lift, 0.14, 0.06, 0.015, 0.015, [0.6, 0.62, 0.66], { seg: 6, ring: 4, noise: 0 });
+  return b;
+}
+// Siege engines and war machines, crewed by ants
+function buildMachine(species, kind, frame, lod) {
+  const b = new MeshB(), look = SPECIES[species].look, acc = rgbf(look.thorax);
+  b.segK = lod ? 0.6 : 1;
+  const ph = frame / ANT3D_FRAMES * Math.PI * 2;
+  const wood = [0.46, 0.31, 0.17], dkwood = [0.3, 0.2, 0.11], bronze = [0.78, 0.5, 0.22], steel = [0.36, 0.39, 0.38], olive = [0.33, 0.37, 0.22];
+  const wheel = (x, z, r, col = dkwood, spin = 0) => {
+    b.ellipsoid(x, r, z, r, r, r * 0.22, col, { seg: 14, ring: 6, noise: 0, rot: (px, py, pz) => [px, py, pz] });
+    b.ellipsoid(x, r, z + Math.sign(z) * r * 0.12, r * 0.25, r * 0.25, r * 0.12, [0.15, 0.12, 0.1], { seg: 8, ring: 4, noise: 0 });
+  };
+  const crew = (x, z, yaw, fr) => {
+    const a = buildAnt(species, 'worker', fr % ANT3D_FRAMES, 1), c = Math.cos(yaw), s = Math.sin(yaw), k = 0.55;
+    b.append(a, (px, py, pz) => [x + (px * c - pz * s) * k, py * k, z + (px * s + pz * c) * k], (px, py, pz) => [px * c - pz * s, py, px * s + pz * c]);
+  };
+  if (kind === 'catapult') {
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) wheel(sx * 0.45, sz * 0.32, 0.13);
+    for (const sz of [-1, 1]) b.tube([-0.6, 0.18, sz * 0.25], [0.6, 0.18, sz * 0.25], 0.035, 0.035, wood, { seg: 6 });
+    for (const sx of [-1, 1]) b.tube([sx * 0.45, 0.18, -0.3], [sx * 0.45, 0.18, 0.3], 0.03, 0.03, wood, { seg: 6 });
+    for (const sz of [-1, 1]) b.tube([0.0, 0.18, sz * 0.25], [-0.05, 0.62, sz * 0.12], 0.03, 0.025, wood, { seg: 6 });
+    b.tube([-0.05, 0.62, -0.14], [-0.05, 0.62, 0.14], 0.03, 0.03, dkwood, { seg: 6 });
+    const a = -0.5 + (Math.sin(ph) * 0.5 + 0.5) * 1.6;    // throwing arm swings
+    const tip = [-0.05 - Math.cos(a) * 0.75, 0.25 + Math.sin(a) * 0.45 + 0.2, 0];
+    b.tube([0.3, 0.22, 0], tip, 0.03, 0.022, wood, { seg: 6 });
+    b.ellipsoid(tip[0], tip[1] + 0.04, 0, 0.09, 0.05, 0.09, dkwood, { seg: 10, ring: 6 });
+    b.ellipsoid(tip[0], tip[1] + 0.09, 0, 0.05, 0.05, 0.05, [0.55, 0.55, 0.5], { seg: 8, ring: 5 });
+    crew(0.75, 0.25, Math.PI, frame); crew(0.7, -0.3, Math.PI * 0.9, frame + 4);
+  } else if (kind === 'cannon' || kind === 'artillery') {
+    const st = kind === 'artillery';
+    const recoil = Math.max(0, Math.sin(ph)) * 0.05;
+    wheel(0, 0.36, st ? 0.26 : 0.24, st ? [0.2, 0.2, 0.2] : dkwood); wheel(0, -0.36, st ? 0.26 : 0.24, st ? [0.2, 0.2, 0.2] : dkwood);
+    b.tube([0, 0.24, -0.36], [0, 0.24, 0.36], 0.03, 0.03, st ? steel : wood, { seg: 6 });
+    b.tube([-0.1, 0.22, 0], [-0.85, 0.04, 0], 0.06, 0.05, st ? olive : wood, { seg: 6 });
+    b.tube([-0.25 - recoil, 0.32, 0], [st ? 1.05 : 0.75, 0.38, 0], st ? 0.07 : 0.1, st ? 0.05 : 0.07, st ? steel : bronze, { seg: 10, cap: true });
+    if (!st) b.ellipsoid(-0.28 - recoil, 0.32, 0, 0.1, 0.1, 0.1, bronze, { seg: 10, ring: 6, noise: 0 });
+    else b.box(0.12, 0.42, 0, 0.04, 0.32, 0.6, olive);
+    b.box(-0.6, 0.06, 0, 0.12, 0.04, 0.12, acc);
+    crew(-0.6, 0.35, 0, frame); crew(-0.5, -0.4, 0.2, frame + 5);
+  } else if (kind === 'tank') {
+    const tc = [0.12, 0.12, 0.1];
+    for (const sz of [-1, 1]) {
+      b.box(0, 0.13, sz * 0.36, 1.45, 0.24, 0.2, tc);
+      for (let i = 0; i < 5; i++) b.ellipsoid(-0.55 + i * 0.275, 0.11, sz * 0.47, 0.09, 0.09, 0.02, [0.25, 0.25, 0.22], { seg: 10, ring: 4, noise: 0 });
+    }
+    b.box(0, 0.32, 0, 1.3, 0.2, 0.58, olive);
+    b.box(0.55, 0.28, 0, 0.3, 0.14, 0.56, olive.map(v => v * 0.9));
+    const ty = Math.sin(ph * 0.5) * 0.15;
+    b.box(-0.08, 0.5, 0, 0.55, 0.18, 0.42, olive.map(v => v * 1.08), ty);
+    b.tube([0.1, 0.5, 0], [0.1 + Math.cos(ty) * 0.85, 0.52, Math.sin(ty) * 0.85], 0.035, 0.03, [0.22, 0.24, 0.18], { seg: 8, cap: true });
+    b.box(-0.6, 0.43, 0.2, 0.18, 0.04, 0.1, acc);
+    b.ellipsoid(-0.2, 0.62, 0.08, 0.07, 0.05, 0.07, [0.2, 0.2, 0.18], { seg: 8, ring: 5 });   // hatch
+  } else if (kind === 'mech') {
+    const body = [0.62, 0.66, 0.72];
+    for (const sd of [-1, 1]) for (let k = 0; k < 3; k++) {
+      const p0 = [(k - 1) * 0.3, 0.62, sd * 0.25];
+      const a = (k - 1) * 0.55 + Math.sin(ph + k * 2.1 + (sd > 0 ? Math.PI : 0)) * 0.3, lift = Math.max(0, Math.cos(ph + k * 2.1 + (sd > 0 ? Math.PI : 0))) * 0.12;
+      const knee = [p0[0] + Math.sin(a) * 0.35, 0.85 + lift, sd * 0.7], foot = [p0[0] + Math.sin(a) * 0.55, 0.02 + lift * 0.6, sd * 0.95];
+      b.limb([p0, knee, foot], 0.06, 0.035, [0.3, 0.32, 0.36], { seg: 6 });
+      b.ellipsoid(knee[0], knee[1], knee[2], 0.07, 0.07, 0.07, acc, { seg: 8, ring: 5, noise: 0 });
+    }
+    b.ellipsoid(0, 0.72, 0, 0.6, 0.24, 0.38, body, { seg: 18, ring: 10, noise: 0.01 });
+    b.ellipsoid(0.48, 0.8, 0, 0.18, 0.12, 0.2, [0.5, 2.2, 2.6], { seg: 12, ring: 6, noise: 0 });     // glowing cockpit
+    for (const sd of [-1, 1]) { b.box(-0.05, 0.98, sd * 0.3, 0.42, 0.14, 0.16, [0.42, 0.45, 0.5]); b.tube([0.1, 0.98, sd * 0.3], [0.75, 0.98, sd * 0.3], 0.03, 0.025, [0.3, 1.6, 2.0], { seg: 6, cap: true }); }
+    b.box(-0.35, 0.92, 0, 0.3, 0.08, 0.3, acc);
   }
   return b;
 }

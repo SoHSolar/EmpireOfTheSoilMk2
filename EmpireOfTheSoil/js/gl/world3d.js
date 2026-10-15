@@ -22,8 +22,16 @@ const GRADE = [
 ];
 const ANT_MAT = { spec: 0.9, shin: 60, rim: 0.2, coat: 0.55, bump: 0.25, bumpScale: 40 };
 const ANT_MAT_MAP = Object.assign({ map: true }, ANT_MAT);
+// season lighting, recoloured on other worlds
+function envFor(si) {
+  const E = SEASON_ENV[si], K = App.st && typeof WORLD_KINDS !== 'undefined' ? WORLD_KINDS[App.st.worldKind || 'earth'] : null;
+  if (!K || !K.sky) return E;
+  return { lightCol: K.light.map((v, i) => v * (0.85 + 0.15 * E.lightCol[i])), sky: K.sky, ground: E.ground.map((v, i) => v * K.decor[i]), fog: K.fog };
+}
+function worldTint(t) { const K = App.st && typeof WORLD_KINDS !== 'undefined' ? WORLD_KINDS[App.st.worldKind || 'earth'] : null; return K && K.decor ? (t || [1, 1, 1]).map((v, i) => v * K.decor[i]) : t; }
+function snowFor(si) { const k = App.st && App.st.worldKind || 'earth'; return k === 'glacis' ? 0.8 : k !== 'earth' ? 0 : si === 3 ? 0.6 : 0; }
 function skyFor(si) {
-  const E = SEASON_ENV[si];
+  const E = envFor(si);
   return { sunDir: SUN_DIR, top: E.sky.map(v => v * 0.7), hor: E.fog.map(v => v * 1.0), sunCol: E.lightCol };
 }
 
@@ -206,12 +214,13 @@ class MapView3D {
     const it = { mesh: this.decorMesh(key), inst, spec: 0.05, shin: 20 };
     if (key === 'grass' || key.startsWith('flower')) {
       it.wind = 1; it.cull = false; it.shadow = near && grassShadow; it.trans = 0.55; it.spec = 0.18; it.shin = 30;
-      if (key === 'grass') it.tintMul = GRASS_TINT[si];
+      if (key === 'grass') it.tintMul = worldTint(GRASS_TINT[si]); else it.tintMul = worldTint(null);
     }
     else if (key === 'leaf') { it.cull = false; it.shadow = false; it.trans = 0.4; it.spec = 0.2; }
     else if (key === 'pebble' || key === 'boulder') { it.shadow = near; it.spec = 0.12; it.bump = 1.2; it.bumpScale = key === 'boulder' ? 7 : 16; }
     else if (key.startsWith('stump')) { it.shadow = near; it.bump = 1.4; it.bumpScale = [7, 1.4, 7]; }
     else { it.shadow = near; it.spec = 0.25; it.shin = 40; it.coat = 0.15; }
+    if (!it.tintMul) it.tintMul = worldTint(null);
     return it;
   }
   decorMesh(key) {
@@ -294,7 +303,7 @@ class MapView3D {
     const bz0 = Math.min(...fp.map(p => p[1])) - 3, bz1 = Math.max(...fp.map(p => p[1])) + 3;
     this.fp = fp;
     const items = [], labels = [], sprites = [];
-    const si = seasonIdx(st.turn), E = SEASON_ENV[si], Q = gl.Q;
+    const si = seasonIdx(st.turn), E = envFor(si), Q = gl.Q;
     for (const ch of this.chunks) {
       ch.visible = !(ch.x1 < bx0 || ch.x0 > bx1 || ch.z1 < bz0 || ch.z0 > bz1);
       if (!ch.visible) continue;
@@ -325,7 +334,7 @@ class MapView3D {
     if (Q.particles > 0 && cam.dist < 30) ambientParticles(sprites, cam.tx, cam.ty, cam.tz, Math.min(cam.dist * 0.9, 14), si, this.t, Q.particles * (1 - cam.dist / 30));
     const env = {
       lightDir: SUN_DIR, lightCol: E.lightCol, sky: E.sky, ground: E.ground, fogCol: E.fog.map(v => v * 0.6), clear: E.fog.map(v => v * 0.55),
-      fogNear: cam.dist * 2.2, fogFar: cam.dist * 5.2, snow: si === 3 ? 0.6 : 0,
+      fogNear: cam.dist * 2.2, fogFar: cam.dist * 5.2, snow: snowFor(si),
       map: { fow: this.fowTex, terr: this.terrTex, canopy: this.canopyTex, w: st.w, h: st.h },
     };
     gl.render({
@@ -407,7 +416,7 @@ class MapView3D {
       items.push({ mesh: this.mRing, model: M, tint: rgbf(c.color), emis: 0.9, spec: 0, shadow: false });
       const tot = sumUnits(sw.units), n = clamp(Math.round(Math.sqrt(tot) * 1.1), 3, 14);
       const castes = [];
-      for (const k of ['major', 'soldier', 'scout', 'worker']) for (let i = 0; i < Math.ceil(n * (sw.units[k] || 0) / Math.max(1, tot)); i++) castes.push(k);
+      for (const k of swarmDrawOrder(sw)) for (let i = 0; i < Math.ceil(n * (sw.units[k] || 0) / Math.max(1, tot)); i++) castes.push(k);
       for (let i = 0; i < Math.min(n, castes.length); i++) {
         const r = mulberry32(sw.id * 13 + i);
         let ox = (r() - 0.5) * 0.75, oz = (r() - 0.5) * 0.75, a;

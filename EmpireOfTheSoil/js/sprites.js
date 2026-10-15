@@ -77,6 +77,12 @@ function renderAnt(species, caste, frame, baseLen) {
   const legCol = look.legs;
   g.lineCap = 'round'; g.lineJoin = 'round';
 
+  if (cs.mount) {   // riding a tamed ground beetle
+    const bg = shadedEllipsoid(L * 0.62, L * 0.4, [34, 70, 50], { gloss: 0.9, seed: 4 });
+    g.strokeStyle = '#1a140e'; g.lineWidth = Math.max(1, L * 0.035);
+    for (const sd of [-1, 1]) for (let k = 0; k < 3; k++) { g.beginPath(); g.moveTo(cx - L * 0.2 + k * L * 0.2, cy); g.lineTo(cx - L * 0.3 + k * L * 0.25, cy + sd * L * 0.55); g.stroke(); }
+    g.drawImage(bg, cx - bg.width / 2, cy - bg.height / 2);
+  }
   // soft contact shadow
   g.save(); g.filter = `blur(${Math.max(1, L * 0.03)}px)`;
   g.fillStyle = 'rgba(0,0,0,0.35)';
@@ -185,6 +191,26 @@ function renderAnt(species, caste, frame, baseLen) {
     g.beginPath(); g.moveTo(bx, by); g.lineTo(ex, ey); g.lineTo(tx, ty); g.stroke();
     g.fillStyle = shade(legCol, 0.75); g.beginPath(); g.arc(tx, ty, antW * 0.9, 0, Math.PI * 2); g.fill();
   }
+  // equipment of the later ages
+  if (cs.helm) {
+    const hc = { bronze: [200, 140, 60], iron: [140, 146, 154], tricorn: [30, 26, 22], brodie: [110, 120, 90], steel: [90, 100, 96], visor: [230, 236, 240] }[cs.helm];
+    const hm = shadedEllipsoid(headR * 0.95, headR * 0.85, hc, { gloss: 1, seed: 2 });
+    g.drawImage(hm, hx - headR * 0.25 - hm.width / 2, cy - hm.height / 2);
+    if (cs.helm === 'visor') { g.fillStyle = '#7ff0ff'; g.fillRect(hx + headR * 0.2, cy - headR * 0.6, headR * 0.3, headR * 1.2); }
+  }
+  if (cs.weapon) {
+    const W2 = { sling: ['#b89a60', 0.012, 0.35], spear: ['#c08a3a', 0.02, 0.95], crossbow: ['#6a4a2a', 0.035, 0.45], musket: ['#4a3020', 0.03, 0.75],
+      rifle: ['#3a3a36', 0.03, 0.65], mg: ['#2a2c2a', 0.05, 0.7], laser: ['#9ff6ff', 0.035, 0.6] }[cs.weapon];
+    const y0 = cy + L * 0.13, x0 = cx - L * 0.05, x1 = hx + L * W2[2] * 0.6;
+    if (cs.weapon === 'laser') { g.save(); g.shadowColor = '#5ff0ff'; g.shadowBlur = L * 0.08; }
+    g.strokeStyle = W2[0]; g.lineWidth = Math.max(1, L * W2[1]);
+    g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y0 - L * 0.02); g.stroke();
+    if (cs.weapon === 'crossbow') { g.beginPath(); g.moveTo(x1 - L * 0.05, y0 - L * 0.15); g.quadraticCurveTo(x1 + L * 0.04, y0, x1 - L * 0.05, y0 + L * 0.13); g.stroke(); }
+    if (cs.weapon === 'spear') { g.fillStyle = '#e0b060'; g.beginPath(); g.moveTo(x1 + L * 0.08, y0 - L * 0.02); g.lineTo(x1, y0 - L * 0.05); g.lineTo(x1, y0 + L * 0.01); g.fill();
+      const sh = shadedEllipsoid(L * 0.08, L * 0.18, [180, 120, 50], { gloss: 1 }); g.drawImage(sh, cx + L * 0.05 - sh.width / 2, cy - L * 0.16 - sh.height / 2); }
+    if (cs.weapon === 'sling') { g.fillStyle = '#9a9a90'; g.beginPath(); g.arc(x1, y0 - L * 0.02, L * 0.035, 0, 6.28); g.fill(); }
+    if (cs.weapon === 'laser') g.restore();
+  }
   // downsample
   const out = makeCanvas(wpx / SS, hpx / SS), og = out.getContext('2d');
   og.imageSmoothingQuality = 'high';
@@ -193,6 +219,7 @@ function renderAnt(species, caste, frame, baseLen) {
 }
 
 function drawAnt(ctx, species, caste, x, y, angle, len, frame, alpha = 1) {
+  if (CASTE_SHAPE[caste] && CASTE_SHAPE[caste].machine) { drawMachine(ctx, species, CASTE_SHAPE[caste].machine, x, y, angle, len, frame, alpha); return; }
   const s = antSprite(species, caste, frame, len);
   const bucket = len <= 9 ? 8 : len <= 14 ? 12 : len <= 22 ? 18 : len <= 34 ? 28 : len <= 70 ? 48 : 150;
   const sc = len / bucket;
@@ -376,4 +403,53 @@ function drawCrown(ctx, x, y, s, n) {
     ctx.font = `bold ${Math.round(s * 0.6)}px sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillStyle = '#000'; ctx.fillText('x' + n, x + s * 0.6 + 1, y + 1); ctx.fillStyle = '#ffe9a0'; ctx.fillText('x' + n, x + s * 0.6, y);
   }
+}
+
+// Top-down sprites for siege engines and war machines
+function machineSprite(species, kind, frame, size) {
+  const key = 'm|' + species + '|' + kind + '|' + (frame % 4) + '|' + size;
+  let c = antCache.get(key);
+  if (c) return c;
+  const S = size * 2, cv = makeCanvas(S * 2.2, S * 1.6), g = cv.getContext('2d');
+  const cx = cv.width / 2, cy = cv.height / 2, acc = SPECIES[species].look.thorax;
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  g.save(); g.filter = `blur(${Math.max(1, S * 0.04)}px)`; g.fillStyle = 'rgba(0,0,0,0.35)'; g.beginPath(); g.ellipse(cx + S * 0.05, cy + S * 0.06, S * 0.8, S * 0.45, 0, 0, 6.28); g.fill(); g.restore();
+  const wheel = (x, y, r) => { g.fillStyle = '#3a2614'; g.beginPath(); g.ellipse(x, y, r, r * 0.35, 0, 0, 6.28); g.fill(); g.strokeStyle = '#1a1008'; g.lineWidth = Math.max(1, r * 0.2); g.stroke(); };
+  if (kind === 'catapult') {
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) wheel(cx + sx * S * 0.45, cy + sy * S * 0.38, S * 0.16);
+    g.strokeStyle = '#7a5530'; g.lineWidth = S * 0.08;
+    g.strokeRect(cx - S * 0.55, cy - S * 0.3, S * 1.1, S * 0.6);
+    const sw = Math.sin(frame / 4 * 6.28) * 0.3;
+    g.strokeStyle = '#9a7040'; g.lineWidth = S * 0.07; g.beginPath(); g.moveTo(cx - S * 0.2, cy); g.lineTo(cx + S * (0.5 + sw * 0.3), cy); g.stroke();
+    g.fillStyle = '#6a4a2a'; g.beginPath(); g.arc(cx + S * (0.55 + sw * 0.3), cy, S * 0.12, 0, 6.28); g.fill();
+  } else if (kind === 'cannon' || kind === 'artillery') {
+    const steel = kind === 'artillery';
+    wheel(cx - S * 0.05, cy - S * 0.42, S * 0.3); wheel(cx - S * 0.05, cy + S * 0.42, S * 0.3);
+    g.strokeStyle = steel ? '#4a5048' : '#6a4a2a'; g.lineWidth = S * 0.12; g.beginPath(); g.moveTo(cx - S * 0.1, cy); g.lineTo(cx - S * 0.75, cy); g.stroke();
+    g.strokeStyle = steel ? '#5a6458' : '#b07a36'; g.lineWidth = S * (steel ? 0.13 : 0.2); g.beginPath(); g.moveTo(cx - S * 0.1, cy); g.lineTo(cx + S * (steel ? 0.85 : 0.7), cy); g.stroke();
+    if (steel) { g.fillStyle = '#4a5448'; g.fillRect(cx - S * 0.02, cy - S * 0.36, S * 0.08, S * 0.72); }
+  } else if (kind === 'tank') {
+    g.fillStyle = '#2a2a24'; g.fillRect(cx - S * 0.75, cy - S * 0.52, S * 1.5, S * 0.22); g.fillRect(cx - S * 0.75, cy + S * 0.3, S * 1.5, S * 0.22);
+    g.fillStyle = shade('#6a7040', 1); g.fillRect(cx - S * 0.7, cy - S * 0.36, S * 1.4, S * 0.72);
+    g.fillStyle = acc; g.fillRect(cx - S * 0.7, cy - S * 0.06, S * 0.25, S * 0.12);
+    g.fillStyle = '#5a6036'; g.beginPath(); g.arc(cx - S * 0.05, cy, S * 0.27, 0, 6.28); g.fill();
+    g.strokeStyle = '#4a5030'; g.lineWidth = S * 0.09; g.beginPath(); g.moveTo(cx + S * 0.1, cy); g.lineTo(cx + S * 1.0, cy); g.stroke();
+  } else if (kind === 'mech') {
+    const ph = frame / 4 * 6.28;
+    g.strokeStyle = '#3a4048'; g.lineWidth = S * 0.08;
+    for (const sd of [-1, 1]) for (let k = 0; k < 3; k++) { const a = (k - 1) * 0.7 + Math.sin(ph + k + (sd > 0 ? 1.5 : 0)) * 0.2; g.beginPath(); g.moveTo(cx + (k - 1) * S * 0.25, cy); g.lineTo(cx + (k - 1) * S * 0.25 + Math.sin(a) * S * 0.7, cy + sd * Math.cos(a) * S * 0.7); g.stroke(); }
+    const body = shadedEllipsoid(S * 0.5, S * 0.36, [150, 158, 170], { gloss: 1, seed: 6 }); g.drawImage(body, cx - body.width / 2, cy - body.height / 2);
+    g.fillStyle = '#7ff0ff'; g.beginPath(); g.ellipse(cx + S * 0.3, cy, S * 0.1, S * 0.16, 0, 0, 6.28); g.fill();
+    g.fillStyle = acc; g.fillRect(cx - S * 0.3, cy - S * 0.05, S * 0.3, S * 0.1);
+  }
+  antCache.set(key, cv);
+  return cv;
+}
+function drawMachine(ctx, species, kind, x, y, angle, len, frame, alpha = 1) {
+  const size = len <= 14 ? 10 : len <= 26 ? 20 : len <= 50 ? 40 : 80;
+  const s = machineSprite(species, kind, frame, size), sc = len / size / 1.6;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
+  if (alpha < 1) ctx.globalAlpha *= alpha;
+  ctx.drawImage(s, -s.width * sc / 2, -s.height * sc / 2, s.width * sc, s.height * sc);
+  ctx.restore();
 }

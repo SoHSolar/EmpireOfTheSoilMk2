@@ -63,14 +63,27 @@ BattleScene.prototype.drawWorld3D = function (ctx, dt) {
   }
   this.dust3 = this.dust3.filter(d => d.life > 0);
   if (GL3D.Q.particles > 0) ambientParticles(sprites, cam.tx, cam.ty, cam.tz, 7, si, this.t3, GL3D.Q.particles * 0.6);
+  // projectiles: stones, bolts, tracers, shells, missiles and laser beams
+  for (const sh of this.shots || []) {
+    const [px, py, hgt] = this.shotPos(sh), x = wx(px), z = wz(py), y = v.groundAt(x, z) + 0.18 + hgt / 100;
+    if (sh.kind === 'laser') {
+      const x0 = wx(sh.x0), z0 = wz(sh.y0), x1 = wx(sh.x1), z1 = wz(sh.y1), n = 14;
+      for (let i = 0; i <= n; i++) { const k = i / n, bx = x0 + (x1 - x0) * k, bz = z0 + (z1 - z0) * k; sprites.push({ v: [bx, v.groundAt(bx, bz) + 0.16, bz, sh.big ? 0.05 : 0.03, 0.6, 2.6, 3.0, 0.9], add: true }); }
+      continue;
+    }
+    const col = sh.kind === 'shot' || sh.kind === 'mg' ? [2.2, 1.9, 1.0, 0.95] : sh.kind === 'missile' ? [2.6, 1.4, 0.5, 1] : sh.kind === 'bolt' ? [0.85, 0.75, 0.55, 1] : sh.kind === 'stone' ? [0.6, 0.58, 0.52, 1] : [0.18, 0.16, 0.14, 1];
+    const size = sh.kind === 'shell' || sh.big ? 0.035 : sh.kind === 'shot' || sh.kind === 'mg' ? 0.015 : 0.022;
+    sprites.push({ v: [x, y, z, size, ...col], add: sh.kind === 'shot' || sh.kind === 'mg' || sh.kind === 'missile' });
+    if (sh.kind === 'missile' || sh.kind === 'shell') sprites.push({ v: [x - (wx(sh.x1) - wx(sh.x0)) * 0.03, y, z, size * 1.6, 0.5, 0.48, 0.45, 0.35] });
+  }
   for (const p of this.particles) {
     const m = /rgba\((\d+),(\d+),(\d+),([\d.]+)\)/.exec(p.col) || [0, 220, 200, 160, 0.6];
     const x = wx(p.x), z = wz(p.y);
     sprites.push({ v: [x, v.groundAt(x, z) + 0.12 + (1 - p.life) * 0.25, z, p.r * 0.022, m[1] / 255, m[2] / 255, m[3] / 255, Math.min(1, p.life * 2) * +m[4]] });
   }
-  const E = SEASON_ENV[si];
+  const E = envFor(si);
   GL3D.render({ rect: { x: 0, y: 0, w: W, h: H }, cam, items, sprites,
-    env: { lightDir: SUN_DIR, lightCol: E.lightCol, sky: E.sky, ground: E.ground, fogCol: E.fog.map(c => c * 0.8), clear: E.fog, fogNear: 14, fogFar: 32, snow: si === 3 ? 0.6 : 0 },
+    env: { lightDir: SUN_DIR, lightCol: E.lightCol, sky: E.sky, ground: E.ground, fogCol: E.fog.map(c => c * 0.8), clear: E.fog, fogNear: 14, fogFar: 32, snow: snowFor(si) },
     shadow: { c: [cam.tx, cam.ty, cam.tz], r: 9 }, sky: skyFor(si), focus: cam.dist, focusRange: 0.32, dofMax: 8, aoRadius: 0.15,
     grade: Object.assign({}, GRADE[si], { contrast: 0.34, sat: (GRADE[si].sat || 1) * 0.95 }), bloomAmt: 0.35, bloomThresh: 1.0, vignette: 0.45 });
   if (!GL3D.postActive) {   // gentle vignette so the banners read well

@@ -12,6 +12,7 @@ class TerrainRenderer {
     this.cache = new Map();
     this.order = [];
     this.seed = state.seed | 0;
+    this.skin = typeof worldSkin === 'function' ? worldSkin(state.worldKind) : null;
     const { w, h, terrain } = state;
     this.off = new Float32Array(w * h);
     for (let i = 0; i < w * h; i++) this.off[i] = T_HEIGHT[terrain[i]];
@@ -23,7 +24,8 @@ class TerrainRenderer {
     const c = makeCanvas(w, h), g = c.getContext('2d');
     const img = g.createImageData(w, h);
     for (let i = 0; i < w * h; i++) {
-      const col = TERRAIN[terrain[i]].color, n = 0.9 + 0.2 * hash2(i % w, (i / w) | 0, this.seed);
+      let col = TERRAIN[terrain[i]].color; const n = 0.9 + 0.2 * hash2(i % w, (i / w) | 0, this.seed);
+      if (this.skin) col = this.skin(col[0], col[1], col[2], terrain[i]);
       img.data[i * 4] = col[0] * n; img.data[i * 4 + 1] = col[1] * n; img.data[i * 4 + 2] = col[2] * n; img.data[i * 4 + 3] = 255;
     }
     g.putImageData(img, 0, 0);
@@ -143,6 +145,14 @@ class TerrainRenderer {
     }
     g.putImageData(img, 0, 0);
     this.decorate(g, z, cx, cy);
+    if (this.skin) {   // other worlds: recolour the finished painting
+      const im = g.getImageData(0, 0, N, N), q = im.data;
+      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        const o = (y * N + x) * 4, k = this.skin(q[o], q[o + 1], q[o + 2], tt[(y + 1) * P + (x + 1)]);
+        q[o] = k[0]; q[o + 1] = k[1]; q[o + 2] = k[2];
+      }
+      g.putImageData(im, 0, 0);
+    }
     return c;
   }
 

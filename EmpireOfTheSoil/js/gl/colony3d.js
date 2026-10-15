@@ -235,9 +235,11 @@ class ColonyView3D {
         }
         case 'galleries': for (let i = 0; i < Math.min(16, Math.ceil(col.adults.worker / 10)); i++) { const [x, z] = spot(); const a = r() * 6.28; this.antAt(col.species, 'worker', 0, x, fy, z, [Math.cos(a), 0, Math.sin(a)], [0, 1, 0], 0.36); } break;
         case 'barracks': {
-          const ns = Math.min(12, Math.ceil(col.adults.soldier / 5)), nm = Math.min(4, Math.ceil(col.adults.major / 3));
-          for (let i = 0; i < ns; i++) this.antAt(col.species, 'soldier', 0, cx - rx * 0.7 + (i % 6) * rx * 0.28, fy, -d * (0.3 + Math.floor(i / 6) * 0.3), [1, 0, 0.15], [0, 1, 0], 0.45);
-          for (let i = 0; i < nm; i++) this.antAt(col.species, 'major', 0, cx - rx * 0.3 + i * 0.6, fy, -d * 0.75, [1, 0, -0.1], [0, 1, 0], 0.55);
+          const mil = CASTE_KEYS.filter(k => k !== 'worker' && k !== 'scout' && !CASTES[k].machine && !CASTES[k].mount && col.adults[k] > 0).sort((p, q) => col.adults[q] - col.adults[p]);
+          const k1 = mil[0] || 'soldier', k2 = mil[1] || 'major';
+          const ns = Math.min(12, Math.ceil(col.adults[k1] / 5)), nm = Math.min(4, Math.ceil(col.adults[k2] / 3));
+          for (let i = 0; i < ns; i++) this.antAt(col.species, k1, 0, cx - rx * 0.7 + (i % 6) * rx * 0.28, fy, -d * (0.3 + Math.floor(i / 6) * 0.3), [1, 0, 0.15], [0, 1, 0], 0.45);
+          for (let i = 0; i < nm; i++) this.antAt(col.species, k2, 0, cx - rx * 0.3 + i * 0.6, fy, -d * 0.75, [1, 0, -0.1], [0, 1, 0], 0.55);
           break;
         }
         case 'archive': for (let i = 0; i < 8 + G.lvl * 4; i++) {
@@ -287,7 +289,7 @@ class ColonyView3D {
     const sprites = [];
     for (const ant of sc.ants) this.placeAnt(ant, col);
     this.contents(col, sprites);
-    const si = seasonIdx(App.st.turn), E = SEASON_ENV[si];
+    const si = seasonIdx(App.st.turn), E = envFor(si);
     const items = [
       { mesh: this.front, tex: this.frontTex, cut: 0.5, spec: 0.06, bump: 0.6, bumpScale: 5, snow: false },
       { mesh: this.cavity, spec: 0.14, shin: 14, bump: 1.4, bumpScale: [5, 7, 5], snow: false },
@@ -319,7 +321,7 @@ class ColonyView3D {
     }
     const env = {
       lightDir: V3.norm([-0.35, 0.62, 0.7]), lightCol: E.lightCol.map(v => v * 1.05), sky: E.sky.map(v => v * 0.9), ground: [0.2, 0.14, 0.09],
-      fogCol: E.fog, fogNear: 30, fogFar: 75, clear: E.fog, snow: si === 3 ? 0.6 : 0,
+      fogCol: E.fog, fogNear: 30, fogFar: 75, clear: E.fog, snow: snowFor(si),
     };
     GL3D.render({ rect: this.rect, cam, env, items, sprites, shadow: { c: [0, -3.5, -1], r: 11 },
       sky: { sunDir: env.lightDir, top: E.sky.map(v => v * 0.7), hor: E.fog, sunCol: E.lightCol },

@@ -21,15 +21,36 @@ function screenHeader(ctx, title, sub) {
 
 // ---------------------------------------------------------------------
 class ResearchScene {
-  constructor() { this.t = 0; this.hover = null; this.layout(); }
+  constructor() {
+    this.t = 0; this.hover = null;
+    const R0 = playerRoot(App.st);
+    this.asc = !!R0.ascend;
+    const avail = TECH_KEYS.filter(k => techAvailable(R0, k));
+    this.era = !this.asc ? 0 : R0.tech ? TECHS[R0.tech].era : avail.length ? Math.min(...avail.map(k => TECHS[k].era)) : eraOf(R0);
+    this.layout();
+  }
   layout() {
     this.pos = {};
+    const y0 = this.asc ? 142 : 112, step = this.asc ? 110 : 118;
+    if (this.era === 0) {
+      BRANCHES.forEach((b, bi) => {
+        const colX = 24 + bi * 312;
+        for (let tier = 0; tier < 4; tier++) {
+          const ks = TECH_KEYS.filter(k => TECHS[k].era === 0 && TECHS[k].branch === b.key && TECHS[k].tier === tier);
+          const nw = 140, gap = 12, total = ks.length * nw + (ks.length - 1) * gap;
+          ks.forEach((k, j) => { this.pos[k] = { x: colX + (296 - total) / 2 + j * (nw + gap), y: y0 + tier * step, w: nw, h: 80 }; });
+        }
+      });
+      return;
+    }
+    const gate = ERA_GATES[this.era];
+    this.pos[gate] = { x: W / 2 - 90, y: y0, w: 180, h: 84 };
     BRANCHES.forEach((b, bi) => {
       const colX = 24 + bi * 312;
-      for (let tier = 0; tier < 4; tier++) {
-        const ks = TECH_KEYS.filter(k => TECHS[k].branch === b.key && TECHS[k].tier === tier);
-        const nw = 140, gap = 12, total = ks.length * nw + (ks.length - 1) * gap;
-        ks.forEach((k, j) => { this.pos[k] = { x: colX + (296 - total) / 2 + j * (nw + gap), y: 112 + tier * 118, w: nw, h: 80 }; });
+      for (let tier = 0; tier < 2; tier++) {
+        const ks = TECH_KEYS.filter(k => TECHS[k].era === this.era && !TECHS[k].gate && TECHS[k].branch === b.key && TECHS[k].tier === tier);
+        const nw = 150, gap = 12, total = ks.length * nw + (ks.length - 1) * gap;
+        ks.forEach((k, j) => { this.pos[k] = { x: colX + (296 - total) / 2 + j * (nw + gap), y: y0 + 140 + tier * 130, w: nw, h: 84 }; });
       }
     });
   }
@@ -37,23 +58,36 @@ class ResearchScene {
   draw(ctx, dt) {
     this.t += dt;
     const st = App.st, c = playerRoot(st), inc = { rp: playerColonies(st).reduce((a, q) => a + projectIncome(st, q).rp, 0) };
-    screenHeader(ctx, 'Research', `${fmt(c.rp)} research banked  •  +${fmt(inc.rp)} per turn (assign workers to Research, dig a Pheromone Archive)`);
+    screenHeader(ctx, 'Research', `${fmt(c.rp)} research banked  •  +${fmt(inc.rp)} per turn${this.asc ? `  •  ${ERAS[eraOf(c)].name}` : ' (assign workers to Research, dig a Pheromone Archive)'}`);
+    const top = this.asc ? 88 : 58;
+    if (this.asc) {
+      const tw = (W - 36) / ERAS.length;
+      ERAS.forEach((E, i) => {
+        const reached = i === 0 || has(c, ERA_GATES[i]), open = i === 0 || reached || techAvailable(c, ERA_GATES[i]);
+        button(ctx, 18 + i * tw, 52, tw - 6, 30, E.name, () => { this.era = i; this.layout(); }, { active: this.era === i, size: 12, disabled: !open && i > eraOf(c) + 1, tip: E.desc });
+      });
+    }
     BRANCHES.forEach((b, bi) => {
       const x = 24 + bi * 312;
-      panel(ctx, x - 6, 58, 308, 500, { passThrough: true, noShadow: true, c1: 'rgba(40,28,16,0.6)', c2: 'rgba(20,13,8,0.6)' });
-      text(ctx, b.name, x + 148, 70, { font: `bold 17px ${FONT_HEAD}`, align: 'center', color: b.color });
+      panel(ctx, x - 6, top, 308, 558 - top, { passThrough: true, noShadow: true, c1: 'rgba(40,28,16,0.6)', c2: 'rgba(20,13,8,0.6)' });
+      text(ctx, b.name, x + 148, top + 12, { font: `bold 17px ${FONT_HEAD}`, align: 'center', color: b.color });
     });
+    if (this.era > 0) {
+      const E = ERAS[this.era];
+      text(ctx, E.name, W / 2, top + 36, { font: `bold 15px ${FONT_HEAD}`, align: 'center', color: E.color });
+    }
     // prerequisite links
     ctx.lineWidth = 2;
-    for (const k of TECH_KEYS) for (const r of TECHS[k].req) {
+    for (const k of Object.keys(this.pos)) for (const r of TECHS[k].req) {
       const a = this.pos[r], b = this.pos[k];
+      if (!a) continue;
       const done = has(c, r);
       ctx.strokeStyle = done ? 'rgba(242,193,78,0.6)' : 'rgba(160,130,90,0.25)';
       ctx.beginPath(); ctx.moveTo(a.x + a.w / 2, a.y + a.h); ctx.bezierCurveTo(a.x + a.w / 2, a.y + a.h + 30, b.x + b.w / 2, b.y - 30, b.x + b.w / 2, b.y); ctx.stroke();
     }
     this.hover = null;
-    for (const k of TECH_KEYS) {
-      const T = TECHS[k], p = this.pos[k], br = BRANCHES.find(b => b.key === T.branch);
+    for (const k of Object.keys(this.pos)) {
+      const T = TECHS[k], p = this.pos[k], br = T.gate ? { color: ERAS[T.era].color, name: 'New Age' } : BRANCHES.find(b => b.key === T.branch);
       const done = has(c, k), cur = c.tech === k, avail = techAvailable(c, k);
       const hov = UI.over(p.x, p.y, p.w, p.h);
       if (hov) this.hover = k;
@@ -83,7 +117,7 @@ class ResearchScene {
     const k = this.hover || c.tech;
     panel(ctx, 18, 568, W - 36, 136);
     if (k) {
-      const T = TECHS[k], br = BRANCHES.find(b => b.key === T.branch);
+      const T = TECHS[k], br = T.gate ? { color: ERAS[T.era].color, name: `Gateway to the ${ERAS[T.era].name}` } : BRANCHES.find(b => b.key === T.branch);
       text(ctx, T.name, 36, 582, { font: `bold 20px ${FONT_HEAD}`, color: br.color });
       text(ctx, `${br.name}  •  ${T.cost} research`, 36, 610, { font: `13px ${FONT_BODY}`, color: COL.dim });
       wrap(ctx, T.desc, 36, 634, 760, 19, { font: `15px ${FONT_BODY}` });

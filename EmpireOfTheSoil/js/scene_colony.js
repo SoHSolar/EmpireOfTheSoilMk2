@@ -105,7 +105,7 @@ class ColonyScene {
     const tot = sumUnits(a);
     const n = clamp(Math.round(Math.sqrt(tot) * 3.2), 6, 95);
     const castes = [];
-    for (const k of CASTE_KEYS) for (let i = 0; i < Math.round(n * a[k] / Math.max(1, tot)); i++) castes.push(k);
+    for (const k of CASTE_KEYS) if (!CASTES[k].machine) for (let i = 0; i < Math.round(n * a[k] / Math.max(1, tot)); i++) castes.push(k);
     if (!castes.length) castes.push('worker');
     this.ants = castes.map((k, i) => {
       const start = pick(Math.random, ['H1', 'H2', 'royal', 'E', 'H3'].filter(x => this.isOpen(x)));
@@ -510,7 +510,9 @@ class ColonyScene {
     line('Queen lays', `${inc.eggs} eggs / turn`, COL.text, 'Limited by the Royal Chamber, season, nursery space, population cap and food.');
     y += 6;
     sec('Population');
-    for (const k of CASTE_KEYS) if (c.adults[k] || casteUnlocked(c, k)) line(`${CASTES[k].name} in nest`, fmt(c.adults[k]));
+    const pl = CASTE_KEYS.filter(k => c.adults[k] || (!CASTES[k].asc && casteUnlocked(c, k))).sort((p, q) => c.adults[q] - c.adults[p]);
+    for (const k of pl.slice(0, 7)) line(`${CASTES[k].name} in nest`, fmt(c.adults[k]));
+    if (pl.length > 7) line(`Other troops in nest`, fmt(pl.slice(7).reduce((a, k) => a + c.adults[k], 0)));
     const pop = population(st, c), pc = popCap(st, c);
     line('Total (incl. swarms/outposts)', `${fmt(pop)} / ${fmt(pc)}`, pop > pc ? COL.bad : COL.text, pop > pc ? 'Overcrowded! Mortality rises sharply. Dig more Worker Galleries.' : null);
     line('Mortality', `${Math.max(0.5, S.mortality).toFixed(1)}% / turn`, COL.dim, 'Natural deaths. A Refuse Midden and Ventilation Shafts reduce it.');
@@ -555,7 +557,16 @@ class ColonyScene {
     text(ctx, 'Caste Mix of New Eggs', x, y, { font: `bold 15px ${FONT_HEAD}`, color: COL.gold }); y += 22;
     wrap(ctx, 'Larval feeding decides what each egg becomes. Larger castes cost more food and take longer.', x, y, w, 16, { font: `12px ${FONT_BODY}`, color: COL.dim }); y += 36;
     const M = normMix(c);
-    for (const k of CASTE_KEYS) {
+    let list = castesShown(c);
+    const rowH = list.length > 4 ? 26 : 34, fit = Math.max(3, Math.floor((H - y - 4) / rowH));
+    if (list.length > fit) {
+      // keep the worker, anything already being raised, then the newest castes
+      const keep = list.filter(k => k === 'worker' || M[k] > 0.001);
+      const rest = list.filter(k => !keep.includes(k)).sort((a, b) => (CASTES[b].era || 0) - (CASTES[a].era || 0));
+      list = keep.concat(rest).slice(0, fit);
+      list.sort((a, b) => CASTE_KEYS.indexOf(a) - CASTE_KEYS.indexOf(b));
+    }
+    for (const k of list) {
       const locked = !casteUnlocked(c, k);
       const adj = d => {
         const nm = Object.assign({}, M);
@@ -567,12 +578,13 @@ class ColonyScene {
       };
       drawAnt(ctx, c.species, k, x + 14, y + 11, -0.4, k === 'major' ? 24 : 18, 0, locked ? 0.3 : 1);
       text(ctx, CASTES[k].name, x + 34, y + 4, { font: `bold 13px ${FONT_BODY}`, color: locked ? COL.faint : COL.text });
-      UI.tip(x, y, 140, 24, `${CASTES[k].desc}\nAttack ${CASTES[k].atk}, health ${CASTES[k].hp}, costs ${CASTES[k].cost} food, ${Math.max(1, CASTES[k].time + S.broodTime)} turns to mature.${locked ? '\nRequires ' + TECHS[CASTES[k].req].name : ''}`);
-      if (locked) { text(ctx, 'requires ' + TECHS[CASTES[k].req].name, x + w, y + 5, { font: `12px ${FONT_BODY}`, align: 'right', color: COL.faint }); y += 34; continue; }
+      const C = CASTES[k];
+      UI.tip(x, y, 140, 24, `${C.desc}\n${C.atk ? `Melee ${C.atk}, ` : ''}${C.rng ? `ranged ${C.rng}, ` : ''}${C.siege ? `siege ${C.siege}, ` : ''}health ${C.hp}. Costs ${C.cost} food${C.mat ? ` + ${C.mat} materials` : ''}, ${Math.max(1, C.time + S.broodTime)} turns to ${C.machine ? 'build' : 'mature'}.${C.move ? `\nMovement ${C.move > 0 ? '+' : ''}${C.move}.` : ''}${locked ? '\nRequires ' + TECHS[C.req].name : ''}`);
+      if (locked) { text(ctx, 'requires ' + TECHS[C.req].name, x + w, y + 5, { font: `12px ${FONT_BODY}`, align: 'right', color: COL.faint }); y += rowH; continue; }
       button(ctx, x + w - 150, y, 28, 24, '-', () => adj(-0.05), { size: 16 });
       text(ctx, `${Math.round(M[k] * 100)}%`, x + w - 82, y + 5, { font: `bold 13px ${FONT_BODY}`, align: 'center' });
       button(ctx, x + w - 28, y, 28, 24, '+', () => adj(0.05), { size: 16 });
-      y += 34;
+      y += rowH;
     }
   }
 

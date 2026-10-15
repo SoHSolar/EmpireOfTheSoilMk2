@@ -15,11 +15,13 @@ function newGame(opts) {
     version: 1, seed, w: size.w, h: size.h, sizeKey: opts.sizeKey, difficulty: opts.difficulty,
     turn: 0, nextId: 1, colonies: [], swarms: [], routes: [], features: [], log: [], popups: [],
     playerId: 0, gameOver: null, pendingBattles: [], rngState: seed ^ 0x5bd1e995,
+    mode: opts.mode || 'classic', worlds: [{ kind: 'earth' }], cw: 0, viewWorld: 0, allCols: [], voyages: [], worldKind: 'earth',
   };
   genMap(st);
   placeColonies(st, opts);
   spawnInitialFeatures(st);
   recompute(st);
+  saveWorld(st);
   logMsg(st, `The queen of ${playerCol(st).name} seals her founding chamber. Her first brood is hatching.`, '#f2c14e');
   logMsg(st, 'Explore with swarms, claim land with outposts, and build your nest from the Colony view.', '#cfc3a8');
   return st;
@@ -32,23 +34,35 @@ function rnd(st) {   // deterministic, save-able RNG
   return ((t ^ t >>> 14) >>> 0) / 4294967296;
 }
 function nid(st) { return st.nextId++; }
+// ---- several worlds: the active world's map data live at the top level of the state ----
+const WORLD_FIELDS = ['seed', 'w', 'h', 'terrain', 'mainRegion', '_reg', 'landTiles', 'explored', 'owner', 'visible', 'swarms', 'features', 'routes', 'colonies', 'worldKind'];
+function saveWorld(st) { const W = st.worlds[st.cw]; for (const f of WORLD_FIELDS) W[f] = st[f]; }
+function setWorld(st, i) {
+  if (i === st.cw) return;
+  saveWorld(st); st.cw = i;
+  const W = st.worlds[i]; for (const f of WORLD_FIELDS) st[f] = W[f];
+}
+function worldName(st, i) { return WORLD_KINDS[st.worlds[i].kind].name; }
+function worldOfKind(st, kind) { return st.worlds.findIndex(W => W.kind === kind); }
+// a blank unit record with every caste
+function U(o) { const u = {}; for (const k of CASTE_KEYS) u[k] = (o && o[k]) || 0; return u; }
 function idx(st, x, y) { return y * st.w + x; }
 function inMap(st, x, y) { return x >= 0 && y >= 0 && x < st.w && y < st.h; }
 function terrainAt(st, x, y) { return st.terrain[y * st.w + x]; }
-function colById(st, id) { return st.colonies.find(c => c.id === id); }
+function colById(st, id) { return (st.allCols || st.colonies).find(c => c.id === id); }
 // Factions: a founding colony and all the sister colonies its queens have founded.
 // st.playerId is the player's faction (its root colony id); st.activeId is the colony being managed.
 function facId(st, id) { const c = colById(st, id); return c ? (c.faction ?? c.id) : id; }
 function facRoot(st, id) { return colById(st, facId(st, id)); }
 function sameFac(st, a, b) { return facId(st, a) === facId(st, b); }
 function isMine(st, id) { return facId(st, id) === st.playerId; }
-function facMembers(st, id) { const f = facId(st, id); return st.colonies.filter(c => c.alive && (c.faction ?? c.id) === f); }
+function facMembers(st, id) { const f = facId(st, id); return (st.allCols || st.colonies).filter(c => c.alive && (c.faction ?? c.id) === f); }
 function isRoot(c) { return (c.faction ?? c.id) === c.id; }
 function relOf(st, a, b) { const A = facRoot(st, a); return A ? A.rel[facId(st, b)] : null; }
 function playerCol(st) {
   let c = colById(st, st.activeId ?? st.playerId);
   if (c && c.alive && isMine(st, c.id)) return c;
-  c = st.colonies.find(x => x.alive && isMine(st, x.id));
+  c = st.colonies.find(x => x.alive && isMine(st, x.id)) || (st.allCols || []).find(x => x.alive && isMine(st, x.id));
   if (c) { st.activeId = c.id; return c; }
   return colById(st, st.playerId);
 }
@@ -178,16 +192,17 @@ function makeColony(st, species, name, color, x, y, isPlayer, boost, rng) {
     id: nid(st), name, species, color, isPlayer, alive: true, nest: { x, y }, outposts: [], lastFlight: -99, founded: st.turn || 0,
     food: 40 * boost, materials: 25 * boost, rp: 0, tech: null, techs: (sp.startTechs || []).slice(),
     chambers: ch, builds: [], brood: [{ caste: 'worker', left: 2, n: Math.round(8 * boost) }, { caste: 'worker', left: 1, n: Math.round(4 * boost) }],
-    adults: { worker: Math.round(14 * boost), soldier: Math.round(3 * boost), major: 0, scout: 0 },
+    adults: U({ worker: Math.round(14 * boost), soldier: Math.round(3 * boost) }),
     jobs: { forage: 0.55, build: 0.25, nurse: 0.1, research: 0.1 },
-    mix: { worker: 0.85, soldier: 0.15, major: 0, scout: 0 },
+    mix: U({ worker: 0.85, soldier: 0.15 }),
     rel: {}, met: {}, last: {}, starving: 0,
     stats: { kills: 0, losses: 0, peakPop: 0, battlesWon: 0, battlesLost: 0 },
     ai: { aggr: 0.3 + (rng ? rng() : Math.random()) * 0.7, cooldown: 4 + Math.floor((rng ? rng() : Math.random()) * 6) },
   };
   if (!isPlayer && boost > 1.2) { c.chambers.granary = 1; c.adults.worker += 10; }
-  c.faction = c.id;
+  c.faction = c.id; c.world = st.cw || 0; c.ascend = st.mode === 'ascension';
   st.colonies.push(c);
+  if (st.allCols && !st.allCols.includes(c)) st.allCols.push(c);
   return c;
 }
 
@@ -225,6 +240,7 @@ function cstats(st, c) {
   if (has(c, 'swarm_tactics')) m.move += 1;
   if (has(c, 'seed_caching')) { m.storage *= 1.4; m.winter *= 1.5; }
   m.territory = has(c, 'tandem') ? 1.3 : 1;
+  m.move = m.move || 0;
   m.attrition = has(c, 'trophallaxis') ? 0.5 : 1;
   if (has(c, 'trophallaxis')) m.upkeep *= 0.85;
   m.flood = has(c, 'ventilation') || m.swim;
@@ -233,12 +249,39 @@ function cstats(st, c) {
   if (has(c, 'chem_diplomacy')) m.trade *= 1.5;
   if (has(c, 'polygyny')) m.lay *= 1.4;
   if (has(c, 'supercolony')) { for (const k of ['atk', 'hp', 'lay', 'forage', 'build', 'research', 'defense', 'trade']) m[k] *= 1.15; }
+  if (c.ascend) {
+    const t = k => has(c, k);
+    if (t('stone_tools')) m.build *= 1.15;
+    if (t('grinding')) m.forage *= 1.2;
+    if (t('mud_brick')) m.cap *= 1.2;
+    if (t('tally')) m.research *= 1.2;
+    if (t('irrigation')) { m.forage *= 1.25; m.fungus *= 1.25; }
+    if (t('ramparts')) m.defense *= 1.4;
+    if (t('glyphs')) m.research *= 1.25;
+    if (t('iron')) m.atk *= 1.15;
+    if (t('rotation')) { m.forage *= 1.25; m.storage *= 1.25; }
+    if (t('castles')) { m.defense *= 1.4; m.cap *= 1.15; }
+    if (t('guilds')) { m.build *= 1.25; m.trade *= 1.25; }
+    if (t('navigation')) { m.swim = true; m.vision += 1; }
+    if (t('star_forts')) m.defense *= 1.4;
+    if (t('printing')) m.research *= 1.3;
+    if (t('steam')) { m.build *= 1.4; m.move += 1; }
+    if (t('mech_farming')) { m.forage *= 1.5; m.territory *= 1.5; }
+    if (t('sanitation')) { m.mortality -= 1; m.cap *= 1.3; }
+    if (t('telegraph')) { m.research *= 1.3; m.vision += 1; }
+    if (t('electricity')) m.research *= 1.3;
+    if (t('green_rev')) { m.forage *= 1.6; m.fungus *= 1.6; }
+    if (t('arcologies')) { m.cap *= 1.5; m.defense *= 1.3; }
+    if (t('radio')) { m.vision += 2; m.trade *= 1.4; m.research *= 1.2; }
+    if (t('fusion')) { m.forage *= 1.5; m.build *= 1.5; }
+    if (t('habitats')) m.cap *= 1.5;
+  }
   if (!c.isPlayer) { const d = DIFFICULTY[st.difficulty].ai; m.forage *= d; m.research *= d; m.build *= d; }
   m.maxOutposts = 1 + (has(c, 'satellite') ? 2 : 0) + (has(c, 'nuptial') ? 2 : 0) + (has(c, 'supercolony') ? 3 : 0);
   m.buildSlots = (has(c, 'parallel_dig') ? 2 : 1) + (has(c, 'metropolis') ? 1 : 0);
   m.maxLevel = has(c, 'metropolis') ? 8 : has(c, 'deep_excavation') ? 5 : 3;
   m.outpostR = has(c, 'nuptial') ? 3 : 2;
-  m.maxRoutes = 1 + Math.floor(c.chambers.royal / 2) + (has(c, 'chem_diplomacy') ? 1 : 0);
+  m.maxRoutes = 1 + Math.floor(c.chambers.royal / 2) + (has(c, 'chem_diplomacy') ? 1 : 0) + (has(c, 'glyphs') ? 1 : 0);
   return m;
 }
 function seasonIdx(turn) { return Math.floor(turn / TURNS_PER_SEASON) % 4; }
@@ -253,7 +296,7 @@ function seasonalForage(S, turn) {
 function chVal(c, key) { const l = c.chambers[key] || 0; return l ? CHAMBERS[key].values[l - 1] : 0; }
 function storageCap(st, c) { const S = cstats(st, c); return Math.round((80 + chVal(c, 'granary')) * S.storage); }
 function popCap(st, c) { const S = cstats(st, c); return Math.round((10 + chVal(c, 'galleries') + chVal(c, 'barracks') + c.outposts.length * 25) * S.cap); }
-function sumUnits(u) { return (u.worker || 0) + (u.soldier || 0) + (u.major || 0) + (u.scout || 0); }
+function sumUnits(u) { let s = 0; for (const k of CASTE_KEYS) s += u[k] || 0; return s; }
 function broodCount(c) { return c.brood.reduce((a, b) => a + b.n, 0); }
 function colonySwarms(st, c) { return st.swarms.filter(s => s.owner === c.id); }
 function totalUnits(st, c) {
@@ -267,15 +310,15 @@ function upkeepOf(units) { let u = 0; for (const k of CASTE_KEYS) u += (units[k]
 function casteUnlocked(c, k) { return !CASTES[k].req || has(c, CASTES[k].req); }
 
 function unitStats(st, c, k) {
-  const S = cstats(st, c);
-  return { atk: CASTES[k].atk * S.atk, hp: CASTES[k].hp * S.hp };
+  const S = cstats(st, c), C = CASTES[k];
+  return { atk: C.atk * S.atk, rng: (C.rng || 0) * S.atk, siege: (C.siege || 0) * S.atk, hp: C.hp * S.hp };
 }
 // Lanchester-style power estimate
 function power(st, c, units, hpMult = 1) {
   let A = 0, Hh = 0;
   for (const k of CASTE_KEYS) {
     const n = units[k] || 0; if (!n) continue;
-    const s = unitStats(st, c, k); A += n * s.atk; Hh += n * s.hp * hpMult;
+    const s = unitStats(st, c, k); A += n * (s.atk + s.rng * 1.2); Hh += n * s.hp * hpMult;
   }
   return Math.sqrt(A * Hh);
 }
@@ -334,17 +377,17 @@ function recompute(st) {
 }
 function computeVisibility(st) {
   const { w, h } = st, vis = new Uint8Array(w * h);
-  const p = playerRoot(st), mine = playerColonies(st);
+  const p = playerRoot(st), mine = playerColonies(st).filter(c => (c.world || 0) === (st.cw || 0));
   const reveal = (cx, cy, r) => {
     for (let y = Math.max(0, cy - r); y <= Math.min(h - 1, cy + r); y++)
       for (let x = Math.max(0, cx - r); x <= Math.min(w - 1, cx + r); x++)
         if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r + r) vis[y * w + x] = 1;
   };
-  if (mine.length) {
+  if (mine.length || st.swarms.some(sw => isMine(st, sw.owner))) {
     const ids = new Set(mine.map(c => c.id));
     for (let i = 0; i < w * h; i++) if (ids.has(st.owner[i])) vis[i] = 1;
     for (const m of mine) { const S = cstats(st, m); for (const s of sitesOf(m, S)) reveal(s.x, s.y, s.r + 1 + Math.max(0, S.vision)); }
-    for (const sw of st.swarms) if (ids.has(sw.owner)) reveal(sw.x, sw.y, swarmVision(st, sw));
+    for (const sw of st.swarms) if (isMine(st, sw.owner)) reveal(sw.x, sw.y, swarmVision(st, sw));
     // trade partners share their scent maps
     for (const r of st.routes) {
       const other = ids.has(r.a) ? r.b : ids.has(r.b) ? r.a : -1;
@@ -458,6 +501,9 @@ function swarmMaxMP(st, sw) {
   let mp = 4 + S.move;
   if (u.scout && u.scout === tot) mp += 2; else if (u.scout >= tot * 0.2) mp += 1;
   if (u.major) mp -= 1;
+  let slow = 0, fast = tot > 0;
+  for (const k of CASTE_KEYS) { if (!u[k]) continue; const m = CASTES[k].move || 0; if (m < slow) slow = m; if (m <= 0 && k !== 'scout') fast = false; }
+  mp += slow + (fast ? 1 : 0);
   if (sw.queens) mp += 2;          // young queens still flit about on their wings
   return Math.max(2, mp);
 }
@@ -491,7 +537,7 @@ function disbandSwarm(st, sw) {
   return true;
 }
 function withdrawGarrison(st, c, outpost) {
-  const keep = { worker: Math.min(5, outpost.units.worker || 0) };
+  const keep = U({ worker: Math.min(5, outpost.units.worker || 0) });
   const u = {}; for (const k of CASTE_KEYS) u[k] = (outpost.units[k] || 0) - (keep[k] || 0);
   if (sumUnits(u) <= 0) return null;
   for (const k of CASTE_KEYS) outpost.units[k] = keep[k] || 0;
@@ -592,16 +638,24 @@ function resolveBattle(st, A, D) {
       const u = unitStats(st, s.col, k);
       let hp = u.hp * (s.hpMult || 1);
       if (has(enemy.col, 'chem_warfare')) hp *= 0.85;
-      st_[k] = { atk: u.atk, hp };
+      st_[k] = { atk: u.atk, rng: u.rng, siege: u.siege, hp };
     }
-    return { units: Object.assign({ worker: 0, soldier: 0, major: 0, scout: 0 }, s.units), stats: st_, start: power(st, s.col, s.units, s.hpMult || 1) };
+    return { units: U(s.units), stats: st_, start: power(st, s.col, s.units, s.hpMult || 1) };
   });
   const rounds = [{ a: Object.assign({}, sides[0].units), d: Object.assign({}, sides[1].units) }];
-  const shield = { worker: 0.6, soldier: 1.2, major: 1.4, scout: 0.7 };   // soldiers take the front line
+  const shield = {}; for (const k of CASTE_KEYS) shield[k] = CASTES[k].shield || 1;   // the front line takes the blows
+  // with ranged units present, an opening volley is fired before the lines meet
+  const volley = sides.some(sd => CASTE_KEYS.some(k => sd.units[k] && sd.stats[k].rng > 0));
   let winner = null;
-  for (let r = 0; r < 7 && !winner; r++) {
+  for (let r = volley ? -1 : 0; r < 7 && !winner; r++) {
     const dmg = sides.map((s, i) => {
-      let d = 0; for (const k of CASTE_KEYS) d += s.units[k] * s.stats[k].atk;
+      let d = 0;
+      for (const k of CASTE_KEYS) {
+        if (!s.units[k]) continue;
+        d += s.units[k] * (s.stats[k].rng + (r >= 0 ? s.stats[k].atk : 0));
+        // siege engines smash fortifications: their damage ignores the defender's nest bonus
+        if (i === 0 && D.noRetreat && s.stats[k].siege) d += s.units[k] * s.stats[k].siege * (D.hpMult || 1);
+      }
       if (r === 0 && SPECIES[(i === 0 ? A : D).col.species] === SPECIES.wood) d *= 1.3;   // formic acid volley
       return d * (0.28 + rnd(st) * 0.1);
     });
@@ -632,8 +686,9 @@ function resolveBattle(st, A, D) {
 }
 
 function battleRecord(st, kind, atkCol, defCol, res, x, y, extra = {}) {
-  const rec = Object.assign({ kind, atk: atkCol.id, def: defCol.id, x, y, terrain: terrainAt(st, x, y), rounds: res.rounds, winner: res.winner, lossA: res.lossA, lossD: res.lossD, turn: st.turn }, extra);
-  if (isMine(st, atkCol.id) || isMine(st, defCol.id)) st.pendingBattles.push(rec);
+  const rec = Object.assign({ kind, atk: atkCol.id, def: defCol.id, x, y, terrain: terrainAt(st, x, y), rounds: res.rounds, winner: res.winner, lossA: res.lossA, lossD: res.lossD, turn: st.turn, world: st.cw }, extra);
+  if ((isMine(st, atkCol.id) || isMine(st, defCol.id)) && st.cw === (st.viewWorld || 0)) st.pendingBattles.push(rec);
+  else if ((isMine(st, atkCol.id) || isMine(st, defCol.id)) && st.worlds) logMsg(st, `Battle on ${worldName(st, st.cw)}: ${atkCol.name} vs ${defCol.name} - ${res.winner === 'atk' ? atkCol.name : defCol.name} won.`, '#ffb080');
   return rec;
 }
 
@@ -710,9 +765,9 @@ function attackOutpost(st, sw, D, o) {
     D.outposts = D.outposts.filter(x => x !== o);
     const S = cstats(st, A);
     if (A.outposts.length < S.maxOutposts) {
-      const g = { worker: Math.min(sw.units.worker, 8), soldier: Math.min(sw.units.soldier, 4) };
+      const g = U({ worker: Math.min(sw.units.worker, 8), soldier: Math.min(sw.units.soldier, 4) });
       sw.units.worker -= g.worker; sw.units.soldier -= g.soldier;
-      A.outposts.push({ x: o.x, y: o.y, units: { worker: g.worker, soldier: g.soldier, major: 0, scout: 0 }, founded: st.turn });
+      A.outposts.push({ x: o.x, y: o.y, units: U(g), founded: st.turn });
       logMsg(st, `${A.name} captured an outpost of ${D.name}.`, A.color);
       rec.captured = 'outpost';
     } else logMsg(st, `${A.name} razed an outpost of ${D.name}.`, A.color);
@@ -725,24 +780,38 @@ function attackOutpost(st, sw, D, o) {
   return rec;
 }
 
+// Where a beaten faction still survives, reveal it so the attacker can finish the job
+function revealRemnants(st, D, by, how) {
+  if (!by || !isMine(st, by.id)) return;
+  const sites = [];
+  for (const m of facMembers(st, D.id)) { sites.push([m.nest.x, m.nest.y, m.name]); }
+  for (const [x, y] of sites) for (let yy = y - 2; yy <= y + 2; yy++) for (let xx = x - 2; xx <= x + 2; xx++) if (inMap(st, xx, yy)) st.explored[idx(st, xx, yy)] = 1;
+  const R0 = facRoot(st, D.id) || D;
+  popup(st, { title: `${R0.name} Lives On`, col: D.color, text: `${how}\n\nThe ${R0.name} colony still has ${sites.length} nest${sites.length > 1 ? 's' : ''}: ${sites.map(s => s[2]).join(', ')}. Their location${sites.length > 1 ? 's are' : ' is'} now marked on your map - destroy every nest to wipe them out.` });
+}
 function nestFallen(st, D, by) {
-  if (has(D, 'polygyny') && D.outposts.length) {
-    // daughter queen takes over the largest outpost
+  const canRelocate = has(D, 'polygyny') && D.outposts.some(o => sumUnits(o.units) >= 12) && st.turn - (D.relocated ?? -999) >= TURNS_PER_YEAR;
+  if (canRelocate) {
+    // a daughter queen in the best-garrisoned outpost takes over (at most once a year)
+    D.outposts = D.outposts.filter(o => sumUnits(o.units) > 0);
     D.outposts.sort((a, b) => sumUnits(b.units) - sumUnits(a.units));
     const o = D.outposts.shift();
+    D.relocated = st.turn;
     D.nest = { x: o.x, y: o.y };
-    D.adults = Object.assign({ worker: 0, soldier: 0, major: 0, scout: 0 }, o.units);
+    D.adults = U(o.units);
     D.adults.worker += 10;
     D.brood = []; D.food = 20; D.builds = [];
     for (const k of CHAMBER_KEYS) if (D.chambers[k] > 1) D.chambers[k] -= 1; else if (!['royal', 'nursery', 'galleries'].includes(k)) D.chambers[k] = 0;
     logMsg(st, `A daughter queen of ${D.name} survives and the colony relocates!`, D.color);
     if (D.isPlayer) popup(st, { title: 'The Queen is Dead - Long Live the Queen', text: 'Your home nest has fallen, but thanks to Polygyny a daughter queen in your largest outpost has taken over. The colony lives on, weakened.' });
     recompute(st);
+    revealRemnants(st, D, by, `The queen of ${D.name} is dead, but they have Polygyny: a daughter queen in one of their outposts took over and the colony moved there. (This can only happen once a year, and only from an outpost with a real garrison - raze their outposts to stop it.)`);
     return;
   }
   D.alive = false;
   st.routes = st.routes.filter(r => r.a !== D.id && r.b !== D.id);
   const heirs = facMembers(st, D.id);   // surviving sister colonies
+  for (const h of heirs) h.lostNest = st.turn;
   if (heirs.length) {
     heirs.sort((a, b) => population(st, b) - population(st, a));
     const heir = isRoot(D) ? heirs[0] : facRoot(st, D.id);
@@ -754,10 +823,11 @@ function nestFallen(st, D, by) {
     }
     logMsg(st, `The nest of ${D.name} has fallen${by ? ' to ' + by.name : ''}.`, D.color);
     recompute(st);
+    revealRemnants(st, D, by, `You destroyed the nest of ${D.name} and killed its queen - but it was not their only colony. Earlier nuptial flights founded sister colonies, and those fight on.`);
     return;
   }
   st.swarms = st.swarms.filter(s => s.owner !== D.id);
-  for (const c of st.colonies) if (c.rel[D.id]) c.rel[D.id].status = 'peace';
+  for (const c of st.allCols || st.colonies) if (c.rel[D.id]) c.rel[D.id].status = 'peace';
   if (D.isPlayer) {
     st.gameOver = { win: false, reason: `Your last queen was slain by ${by ? by.name : 'enemies'}. The colony of ${D.name} is no more.` };
   }
@@ -768,7 +838,7 @@ function transferLeadership(st, D, heir) {
   const old = D.id, nw = heir.id;
   heir.rel = D.rel; heir.met = D.met; heir.rp = (heir.rp || 0) + (D.rp || 0); heir.tech = D.tech; heir.techs = D.techs;
   heir.ai = D.ai;
-  for (const c of st.colonies) {
+  for (const c of st.allCols || st.colonies) {
     if ((c.faction ?? c.id) === old) c.faction = nw;
     if (c.rel[old]) { c.rel[nw] = c.rel[old]; delete c.rel[old]; }
     if (c.met[old]) { c.met[nw] = true; delete c.met[old]; }
@@ -830,7 +900,7 @@ function canFoundColony(st, sw) {
 }
 function sisterName(st, root) {
   const base = root.baseName || root.name;
-  const n = st.colonies.filter(c => (c.baseName || c.name) === base).length + 1;
+  const n = (st.allCols || st.colonies).filter(c => (c.baseName || c.name) === base).length + 1;
   return `${base} ${ROMAN[Math.min(ROMAN.length - 1, n - 1)]}`;
 }
 function foundColony(st, sw) {
@@ -842,11 +912,11 @@ function foundColony(st, sw) {
   c.techs = root.techs; c.rel = {}; c.met = {}; c.ai = Object.assign({}, root.ai);
   c.chambers = { royal: 1, nursery: 1, galleries: 1, granary: 0, barracks: 0, archive: 0, fungus: 0, aphids: 0, midden: 0, gates: 0 };
   const take = Math.ceil(sumUnits(sw.units) / sw.queens);
-  const units = { worker: 0, soldier: 0, major: 0, scout: 0 }; let left = take;
-  for (const k of ['worker', 'soldier', 'scout', 'major']) { const t = Math.min(left, sw.units[k]); units[k] = t; sw.units[k] -= t; left -= t; }
+  const units = U(); let left = take;
+  for (const k of CASTE_KEYS) { const t = Math.min(left, sw.units[k] || 0); units[k] = t; sw.units[k] -= t; left -= t; }
   c.adults = units;
   c.brood = [{ caste: 'worker', left: 2, n: 8 }, { caste: 'worker', left: 1, n: 5 }];
-  c.food = 40; c.materials = 25; c.jobs = Object.assign({}, mother.jobs); c.mix = { worker: 0.85, soldier: 0.15, major: 0, scout: 0 };
+  c.food = 40; c.materials = 25; c.jobs = Object.assign({}, mother.jobs); c.mix = U({ worker: 0.85, soldier: 0.15 });
   c.lastFlight = st.turn;
   sw.queens--;
   if (!sw.queens || sumUnits(sw.units) <= 0) removeSwarm(st, sw);
@@ -865,7 +935,7 @@ function declareWar(st, a, b) {
   A.rel[b].warTurns = 0; B.rel[a].warTurns = 0;
   A.rel[b].score = Math.min(A.rel[b].score, -40); B.rel[a].score = Math.min(B.rel[a].score, -50);
   st.routes = st.routes.filter(r => !atWar(st, r.a, r.b));
-  for (const c of st.colonies) if (c.alive && c.id !== a && c.id !== b && c.rel[a] && c.rel[b] && c.rel[b].status !== 'war') c.rel[a].score -= 5;
+  for (const c of st.allCols || st.colonies) if (c.alive && c.id !== a && c.id !== b && c.rel[a] && c.rel[b] && c.rel[b].status !== 'war') c.rel[a].score -= 5;
   logMsg(st, `${A.name} has declared war on ${B.name}!`, '#ff7a5c');
   if (b === st.playerId) popup(st, { title: 'War Declared!', text: `The ${A.name} colony (${SPECIES[A.species].name}) has declared war on you. Expect their swarms soon.`, col: A.color });
 }
@@ -970,7 +1040,7 @@ function economy(st, c) {
   }
   if (c.chambers.aphids) L.food += chVal(c, 'aphids') * (seasonIdx(st.turn) === 3 ? 0.6 : 1);
   L.mat = (workers * jobs.build * 0.6 + c._mat * 0.03) * S.build * (seasonIdx(st.turn) === 3 ? 0.6 : 1);
-  L.rp = (4 + Math.pow(workers * jobs.research * 0.8, 0.85)) * (c.chambers.archive ? chVal(c, 'archive') : 1) * S.research;
+  L.rp = ((c.ascend ? 9 : 4) + Math.pow(workers * jobs.research * 0.8, 0.85)) * (c.chambers.archive ? chVal(c, 'archive') : 1) * S.research;
   for (const r of st.routes) {
     if (r.blocked || (r.a !== c.id && r.b !== c.id)) continue;
     const inc = routeIncome(st, r, c.id);
@@ -1003,8 +1073,9 @@ function economy(st, c) {
       if (!mix[k]) continue;
       let n = Math.floor(eggs * mix[k] + (k === 'worker' ? 0.5 : 0));
       if (laid + n > eggs) n = eggs - laid;
+      if (CASTES[k].mat) n = Math.min(n, Math.floor(Math.max(0, c.materials) * 0.5 / CASTES[k].mat));     // weapons & machines use up to half the materials
       if (n <= 0) continue;
-      laid += n; c.food -= n * CASTES[k].cost;
+      laid += n; c.food -= n * CASTES[k].cost; c.materials -= n * (CASTES[k].mat || 0);
       c.brood.push({ caste: k, left: Math.max(1, CASTES[k].time + S.broodTime), n });
     }
     L.laid = laid;
@@ -1053,7 +1124,11 @@ function economy(st, c) {
     const T = TECHS[c.tech];
     if (c.rp >= T.cost) {
       c.rp -= T.cost; c.techs.push(c.tech);
-      if (c.isPlayer) { logMsg(st, `Research complete: ${T.name}.`, '#c9a0ff'); popup(st, { title: 'Discovery!', text: `${T.name}\n\n${T.desc}`, col: '#b48ef0' }); }
+      if (c.isPlayer) {
+        logMsg(st, `Research complete: ${T.name}.`, '#c9a0ff');
+        if (T.gate) popup(st, { title: `A New Age: ${ERAS[T.era].name}`, text: `${T.name}\n\n${ERAS[T.era].desc}\n\n${T.desc}\n\nNew research has opened up in the Research screen.`, col: ERAS[T.era].color });
+        else popup(st, { title: 'Discovery!', text: `${T.name}\n\n${T.desc}`, col: '#b48ef0' });
+      } else if (T.gate && st.allCols) logMsg(st, `${c.name} has entered the ${ERAS[T.era].name}.`, c.color);
       c.tech = null;
     }
   }
@@ -1090,6 +1165,7 @@ function startBuild(st, c, key) {
   return null;
 }
 function techAvailable(c, key) {
+  if (TECHS[key].era && !c.ascend) return false;
   return !has(c, key) && TECHS[key].req.every(r => has(c, r));
 }
 
@@ -1108,7 +1184,7 @@ function projectIncome(st, c) {
   for (const r of st.routes) if (!r.blocked && (r.a === c.id || r.b === c.id)) { const i = routeIncome(st, r, c.id); trade += i.food; trp += i.rp; }
   const upkeep = (upkeepOf(totalUnits(st, c)) + 1 + broodCount(c) * 0.03) * S.upkeep * sea.upkeep;
   const mat = (c.adults.worker * jobs.build * 0.6 + c._mat * 0.03) * S.build * (seasonIdx(st.turn) === 3 ? 0.6 : 1) - (c.chambers.fungus ? c.chambers.fungus * (c.species === 'leafcutter' ? 1.5 : 1) : 0);
-  const rp = (4 + Math.pow(c.adults.worker * jobs.research * 0.8, 0.85)) * (c.chambers.archive ? chVal(c, 'archive') : 1) * S.research + trp;
+  const rp = ((c.ascend ? 9 : 4) + Math.pow(c.adults.worker * jobs.research * 0.8, 0.85)) * (c.chambers.archive ? chVal(c, 'archive') : 1) * S.research + trp;
   return { food: food + trade - upkeep, foodIn: food, forage, fungus, trade, upkeep, mat, rp, cap, foragers,
            nurseSupport: c.adults.worker * jobs.nurse * 8 + 6, eggs: Math.floor(chVal(c, 'royal') * S.lay * sea.lay) };
 }
@@ -1126,9 +1202,20 @@ function aiEconomy(st, c) {
   c.jobs = { forage, nurse: nurseNeed, build: 0.25, research: Math.max(0.05, 1 - forage - nurseNeed - 0.25) };
   // caste mix
   const threat = atWarAny ? 0.3 : 0.12 + c.ai.aggr * 0.08;
-  c.mix = { worker: 1 - threat, soldier: threat, major: 0, scout: 0 };
+  c.mix = U({ worker: 1 - threat, soldier: threat });
   if (has(c, 'polymorphism')) { c.mix.major = threat * 0.35; c.mix.soldier = threat * 0.65; }
   if (has(c, 'scout_caste') && st.turn % 7 === 0) c.mix.scout = 0.05;
+  if (c.ascend) {
+    const best = role => CASTE_KEYS.filter(k => CASTES[k].asc && casteUnlocked(c, k) && casteRole(k) === role).sort((a, b) => CASTES[b].era - CASTES[a].era)[0];
+    const mel = best('melee'), rng = best('ranged'), sie = best('siege');
+    if (mel || rng) {
+      for (const k of CASTE_KEYS) if (k !== 'worker' && k !== 'scout') c.mix[k] = 0;
+      const sie2 = sie && c.materials > 200 ? 0.15 : 0;
+      c.mix[mel || (has(c, 'polymorphism') ? 'major' : 'soldier')] = threat * (rng ? 0.5 : 1 - sie2);
+      if (rng) c.mix[rng] = threat * (0.5 - sie2);
+      if (sie2) c.mix[sie] = threat * sie2;
+    }
+  }
   // building
   if (c.builds.length < S.buildSlots) {
     const pop = population(st, c), pc = popCap(st, c);
@@ -1152,18 +1239,20 @@ function aiEconomy(st, c) {
         const wb = TECHS[b].cost * (TECHS[b].branch === 'war' ? 1 - c.ai.aggr * 0.5 : 1);
         return wa - wb;
       });
-      c.tech = avail[Math.floor(rnd(st) * Math.min(3, avail.length))];
+      const gate = avail.find(k => TECHS[k].gate);
+      c.tech = gate && rnd(st) < 0.6 ? gate : avail[Math.floor(rnd(st) * Math.min(3, avail.length))];
     }
   }
 }
 
+function casteRole(k) { const C = CASTES[k]; return C.machine ? (C.atk < 10 ? 'siege' : 'melee') : (C.rng || 0) > C.atk ? 'ranged' : 'melee'; }
 function aiDiplomacy(st, c) {
   const diff = DIFFICULTY[st.difficulty];
   const myP = factionPower(st, c.id);
-  for (const o of st.colonies) {
+  for (const o of st.allCols || st.colonies) {
     if (!o.alive || o === c || !isRoot(o) || !c.rel[o.id]) continue;
     const r = c.rel[o.id];
-    const ndist = dist(c.nest.x, c.nest.y, o.nest.x, o.nest.y);
+    const ndist = o.world !== c.world ? 999 : dist(c.nest.x, c.nest.y, o.nest.x, o.nest.y);
     if (ndist > 55 && !(o.isPlayer && c.met[o.id])) continue;
     if (r.status === 'war') {
       r.warTurns++;
@@ -1207,7 +1296,7 @@ function aiMilitary(st, c) {
   for (const intr of intruders) {
     if (mySwarms.some(s => s.target && s.target.swarm === intr.id)) continue;
     const ip = power(st, colById(st, intr.owner), intr.units);
-    const avail = { worker: 0, soldier: Math.floor(c.adults.soldier * 0.8), major: Math.floor(c.adults.major * 0.8), scout: 0 };
+    const avail = U(); for (const k of CASTE_KEYS) if (k !== 'worker' && k !== 'scout') avail[k] = Math.floor(c.adults[k] * 0.8);
     if (power(st, c, avail) > ip * 1.1) {
       const sw = musterSwarm(st, c, avail);
       if (sw) { sw.role = 'attack'; sw.target = { swarm: intr.id }; }
@@ -1225,7 +1314,7 @@ function aiMilitary(st, c) {
     }
     if (best && bd < 60) {
       const need = siteDefense(st, best.col, best) * (1.15 + rnd(st) * 0.3);
-      const avail = { worker: Math.floor(c.adults.worker * 0.1), soldier: Math.floor(c.adults.soldier * 0.85), major: Math.floor(c.adults.major * 0.85), scout: c.adults.scout };
+      const avail = U({ worker: Math.floor(c.adults.worker * 0.1), scout: c.adults.scout }); for (const k of CASTE_KEYS) if (k !== 'worker' && k !== 'scout') avail[k] = Math.floor(c.adults[k] * 0.85);
       const ap = power(st, c, avail);
       if (ap > need && sumUnits(avail) > 8) {
         const sw = musterSwarm(st, c, avail);
@@ -1243,7 +1332,9 @@ function aiMilitary(st, c) {
     }
   }
   // nuptial flights: big AI colonies spread sister colonies too
-  if (!canNuptialFlight(st, c) && population(st, c) > 380 && facMembers(st, c.id).length < 5 && rnd(st) < 0.3 &&
+  const threatened = enemies.length && st.swarms.some(s => atWar(st, c.id, s.owner) && dist(s.x, s.y, c.nest.x, c.nest.y) < 14);
+  const beaten = facMembers(st, c.id).some(m => st.turn - (m.lostNest ?? -999) < TURNS_PER_YEAR * 2);
+  if (!threatened && !beaten && !canNuptialFlight(st, c) && population(st, c) > 380 && facMembers(st, c.id).length < 5 && rnd(st) < 0.3 &&
       !colonySwarms(st, c).some(s => s.queens)) {
     const res = nuptialFlight(st, c);
     for (const q of res.swarms || []) {
@@ -1251,6 +1342,13 @@ function aiMilitary(st, c) {
       if (spot) { q.role = 'found'; q.target = { x: spot[0], y: spot[1] }; }
       else { q.role = 'return'; q.queens = 0; }
     }
+  }
+  // the space race: big AI empires send colony ships to other worlds
+  if (c.ascend && has(c, 'colony_ships') && !c.alien && rnd(st) < 0.05) {
+    const worlds = new Set(facMembers(st, c.id).map(m => st.worlds[m.world || 0].kind));
+    for (const v of st.voyages) if (sameFac(st, v.owner, c.id)) worlds.add(v.dest);
+    const dest = WORLD_KEYS.filter(k => !worlds.has(k));
+    if (dest.length && !canLaunchShip(st, c, 'colony')) launchShip(st, c, 'colony', dest[Math.floor(rnd(st) * dest.length)]);
   }
   // move swarms
   for (const sw of colonySwarms(st, c)) aiMoveSwarm(st, c, sw);
@@ -1365,18 +1463,54 @@ function continuePlayerPaths(st) {
 
 function endTurn(st) {
   st.pendingBattles = [];
-  const p = playerCol(st);
-  // AI phase
-  for (const c of st.colonies) {
-    if (!c.alive || c.isPlayer) continue;
-    aiEconomy(st, c);
-    if (isRoot(c)) aiDiplomacy(st, c);
-    aiMilitary(st, c);
-    if (st.gameOver) break;
+  const view = st.cw; st.viewWorld = view;
+  const nW = st.worlds ? st.worlds.length : 1;
+  for (let wi = 0; wi < nW; wi++) {
+    if (st.worlds) setWorld(st, wi);
+    // AI phase
+    for (const c of st.colonies.slice()) {
+      if (!c.alive || c.isPlayer) continue;
+      aiEconomy(st, c);
+      if (isRoot(c)) aiDiplomacy(st, c);
+      aiMilitary(st, c);
+      if (st.gameOver) break;
+    }
+    updateRouteBlocks(st);
+    // economy for everyone
+    for (const c of st.colonies) if (c.alive) economy(st, c);
+    swarmUpkeep(st);
+    // features
+    for (const f of st.features) if (f.ttl) f.ttl--;
+    st.features = st.features.filter(f => !FEATURES[f.type].ttl || f.ttl > 0);
+    const temp = st.features.filter(f => FEATURES[f.type].ttl).length;
+    if (temp < st.w * st.h / 90 && rnd(st) < 0.8) spawnFeature(st, pick(() => rnd(st), ['fruit', 'fruit', 'carcass', 'carcass', 'picnic']));
+    if (seasonIdx(st.turn) !== 3 && rnd(st) < 0.15) spawnFeature(st, rnd(st) < 0.5 ? 'aphids' : 'seeds');
   }
-  updateRouteBlocks(st);
-  // economy for everyone
-  for (const c of st.colonies) if (c.alive) economy(st, c);
+  // random events for the player
+  const p = playerCol(st);
+  if (p && p.alive) { if (st.worlds) setWorld(st, p.world || 0); playerEvents(st, p); }
+  // relations drift
+  relationsDrift(st);
+  // time passes
+  const oldSeason = seasonIdx(st.turn);
+  st.turn++;
+  if (seasonIdx(st.turn) !== oldSeason) {
+    const s = season(st.turn);
+    logMsg(st, `${s.name} arrives. ${['New life stirs - the queen lays more eggs.', 'Long warm days - foraging is at its peak.', 'The days shorten - laying slows.', 'Winter: the colony huddles deep below. Foraging almost stops.'][seasonIdx(st.turn)]}`, '#9fd0ff');
+  }
+  if (st.voyages) voyagesArrive(st);
+  for (let wi = 0; wi < nW; wi++) {
+    if (st.worlds) setWorld(st, wi);
+    for (const sw of st.swarms) sw.mp = swarmMaxMP(st, sw);
+    // player swarms continue multi-turn orders
+    continuePlayerPaths(st);
+    recompute(st);
+    updateRouteBlocks(st);
+  }
+  if (st.worlds) setWorld(st, view);
+  checkVictory(st);
+}
+function swarmUpkeep(st) {
   // swarm attrition & harvesting
   for (const sw of st.swarms.slice()) {
     const c = colById(st, sw.owner); if (!c || !c.alive) { removeSwarm(st, sw); continue; }
@@ -1384,7 +1518,7 @@ function endTurn(st) {
     const ow = st.owner[idx(st, sw.x, sw.y)], own = ow >= 0 && sameFac(st, ow, c.id);
     if (!own) {
       const rate = (seasonIdx(st.turn) === 3 ? 0.04 : 0.015) * S.attrition;
-      for (const k of CASTE_KEYS) { const x = sw.units[k] * rate; sw.units[k] -= Math.floor(x) + (rnd(st) < x % 1 ? 1 : 0); }
+      for (const k of CASTE_KEYS) { const x = (sw.units[k] || 0) * rate; sw.units[k] = (sw.units[k] || 0) - (Math.floor(x) + (rnd(st) < x % 1 ? 1 : 0)); }
       const f = featureAt(st, sw.x, sw.y);
       if (f && sw.units.worker > 0) { const g = Math.min(f.food, sw.units.worker * 0.8); c.food = Math.min(storageCap(st, c), c.food + g); }
     }
@@ -1399,46 +1533,167 @@ function endTurn(st) {
     }
     if (sumUnits(sw.units) <= 0) { queenLost(st, sw, 'alone in the open'); removeSwarm(st, sw); }
   }
-  // features
-  for (const f of st.features) if (f.ttl) f.ttl--;
-  st.features = st.features.filter(f => !FEATURES[f.type].ttl || f.ttl > 0);
-  const temp = st.features.filter(f => FEATURES[f.type].ttl).length;
-  if (temp < st.w * st.h / 90 && rnd(st) < 0.8) spawnFeature(st, pick(() => rnd(st), ['fruit', 'fruit', 'carcass', 'carcass', 'picnic']));
-  if (seasonIdx(st.turn) !== 3 && rnd(st) < 0.15) spawnFeature(st, rnd(st) < 0.5 ? 'aphids' : 'seeds');
-  // random events for the player
-  if (p && p.alive) playerEvents(st, p);
-  // relations drift
-  relationsDrift(st);
-  // time passes
-  const oldSeason = seasonIdx(st.turn);
-  st.turn++;
-  if (seasonIdx(st.turn) !== oldSeason) {
-    const s = season(st.turn);
-    logMsg(st, `${s.name} arrives. ${['New life stirs - the queen lays more eggs.', 'Long warm days - foraging is at its peak.', 'The days shorten - laying slows.', 'Winter: the colony huddles deep below. Foraging almost stops.'][seasonIdx(st.turn)]}`, '#9fd0ff');
+}
+
+// ---------------------------------------------------------------------
+//  Space: colony ships, troop ships and new worlds
+// ---------------------------------------------------------------------
+const SHIP_COST = { colony: { mat: 1000, food: 600, workers: 400 }, troop: { mat: 500, food: 200, workers: 0 } };
+function canLaunchShip(st, c, kind) {
+  if (!c.ascend || !has(c, 'colony_ships')) return 'Research Colony Ships first.';
+  const k = SHIP_COST[kind];
+  if (c.materials < k.mat) return `Needs ${k.mat} materials.`;
+  if (c.food < k.food) return `Needs ${k.food} food.`;
+  if (c.adults.worker < k.workers + 200) return `Needs ${k.workers + 200} workers in the nest.`;
+  if (kind === 'troop' && militaryCount(c.adults) < 20) return 'Needs at least 20 soldiers in the nest to embark.';
+  if (st.voyages.some(v => v.from === c.id && st.turn - v.launched < 2)) return 'The launch pad is still being rebuilt.';
+  return null;
+}
+function militaryCount(u) { let n = 0; for (const k of CASTE_KEYS) if (k !== 'worker') n += u[k] || 0; return n; }
+// kind: 'colony' founds a new nest; 'troop' lands the nest's army as a swarm
+function launchShip(st, c, kind, worldKey) {
+  const err = canLaunchShip(st, c, kind); if (err) return err;
+  const k = SHIP_COST[kind];
+  c.materials -= k.mat; c.food -= k.food;
+  const units = U();
+  if (kind === 'colony') {
+    units.worker = k.workers; c.adults.worker -= k.workers;
+    for (const q of CASTE_KEYS) if (q !== 'worker') { const n = Math.floor(c.adults[q] * 0.15); units[q] += n; c.adults[q] -= n; }
+  } else {
+    for (const q of CASTE_KEYS) if (q !== 'worker') { const n = Math.floor(c.adults[q] * 0.8); units[q] += n; c.adults[q] -= n; }
+    units.worker = Math.min(60, Math.floor(c.adults.worker * 0.05)); c.adults.worker -= units.worker;
   }
-  for (const sw of st.swarms) sw.mp = swarmMaxMP(st, sw);
-  // player swarms continue multi-turn orders
-  continuePlayerPaths(st);
+  const travel = WORLD_KINDS[worldKey].travel || (worldKey === 'earth' ? 3 : 4);
+  st.voyages.push({ id: nid(st), kind, from: c.id, owner: c.id, dest: worldKey, units, launched: st.turn, arrive: st.turn + travel, species: c.species });
+  logMsg(st, `A ${kind === 'colony' ? 'colony' : 'troop'} ship lifts off from ${c.name} bound for ${WORLD_KINDS[worldKey].name} (${travel} turns).`, '#c8a8ff');
+  return null;
+}
+// create a world the first time anyone travels there
+function ensureWorld(st, kind) {
+  let i = worldOfKind(st, kind);
+  if (i >= 0) return i;
+  saveWorld(st);
+  const view = st.cw;
+  st.worlds.push({ kind });
+  i = st.worlds.length - 1;
+  st.cw = i;
+  const size = MAP_SIZES[st.sizeKey === 'skirmish' ? 'skirmish' : 'standard'];
+  st.seed = (st.worlds[0].seed * 7 + i * 7919 + 13) | 0; st.w = size.w; st.h = size.h; st.worldKind = kind;
+  st.swarms = []; st.features = []; st.routes = []; st.colonies = [];
+  genMap(st);
+  placeAliens(st, kind);
+  spawnInitialFeatures(st);
   recompute(st);
-  updateRouteBlocks(st);
-  checkVictory(st);
+  saveWorld(st);
+  setWorld(st, view);
+  return i;
+}
+function placeAliens(st, kind) {
+  const W = WORLD_KINDS[kind], rng = mulberry32(st.seed + 5);
+  const sites = [], n = st.sizeKey === 'skirmish' ? 2 : 3;
+  const ok = (x, y) => x > 4 && y > 4 && x < st.w - 5 && y < st.h - 5 && st._reg[y * st.w + x] === st.mainRegion;
+  for (let k = 0; k < n; k++) {
+    let best = null, bd = -1;
+    for (let t = 0; t < 300; t++) {
+      const x = 5 + Math.floor(rng() * (st.w - 10)), y = 5 + Math.floor(rng() * (st.h - 10));
+      if (!ok(x, y)) continue;
+      let md = 1e9; for (const p of sites) md = Math.min(md, dist(x, y, p[0], p[1]));
+      if (md > bd) { bd = md; best = [x, y]; }
+    }
+    if (best) sites.push(best);
+  }
+  const era = Math.min(5, Math.max(3, eraOf(playerRoot(st)) - 1));
+  const names = shuffle(rng, ALIEN_NAMES.slice());
+  sites.forEach(([x, y], k) => {
+    const sp = W.aliens[k % W.aliens.length];
+    const c = makeColony(st, sp, names[k % names.length], ['#9a5af0', '#40d8c0', '#e8e040', '#f05a9a'][k % 4], x, y, false, 2 * DIFFICULTY[st.difficulty].ai, rng);
+    c.alien = true;
+    // alien civilisations have their own advanced bio-technology
+    for (const t of TECH_KEYS) if (TECHS[t].era <= era && !c.techs.includes(t) && (TECHS[t].era > 0 || true)) c.techs.push(t);
+    Object.assign(c.chambers, { royal: 4, nursery: 4, galleries: 4, granary: 3, barracks: 3, gates: 3, midden: 2 });
+    c.adults = U({ worker: 900, soldier: 120 });
+    const mel = CASTE_KEYS.filter(q => CASTES[q].asc && casteUnlocked(c, q) && casteRole(q) === 'melee').pop();
+    const rg = CASTE_KEYS.filter(q => CASTES[q].asc && casteUnlocked(c, q) && casteRole(q) === 'ranged').pop();
+    if (mel) c.adults[mel] = 80; if (rg) c.adults[rg] = 120;
+    c.food = 800; c.materials = 900;
+    for (const o of st.allCols) if (o !== c && isRoot(o)) {
+      const sc = -15 - Math.round(rng() * 20);
+      o.rel[c.id] = { status: 'peace', score: sc, warTurns: 0 };
+      c.rel[o.id] = { status: 'peace', score: sc, warTurns: 0 };
+    }
+  });
+}
+function landingSpot(st, avoidAliens) {
+  let best = null, bs = -1e9;
+  const rng = () => rnd(st);
+  for (let t = 0; t < 400; t++) {
+    const x = 4 + Math.floor(rng() * (st.w - 8)), y = 4 + Math.floor(rng() * (st.h - 8));
+    if (st._reg && st._reg[y * st.w + x] !== st.mainRegion) continue;
+    if (!TERRAIN[terrainAt(st, x, y)].pass || st.owner[idx(st, x, y)] >= 0) continue;
+    let md = 1e9;
+    for (const c of st.colonies) if (c.alive) for (const s of sitesOf(c, cstats(st, c))) md = Math.min(md, dist(x, y, s.x, s.y));
+    const score = Math.min(md, avoidAliens ? 30 : 14) + rng() * 2;
+    if (md >= 8 && score > bs) { bs = score; best = [x, y]; }
+  }
+  return best;
+}
+function voyagesArrive(st) {
+  const view = st.cw;
+  for (const v of st.voyages.slice()) {
+    if (v.arrive > st.turn) continue;
+    st.voyages = st.voyages.filter(x => x !== v);
+    const owner = colById(st, v.owner);
+    const root = owner && owner.alive ? facRoot(st, owner.id) : facMembers(st, v.owner)[0];
+    if (!root || !root.alive && !facMembers(st, root.id).length) continue;
+    const wi = ensureWorld(st, v.dest);
+    setWorld(st, wi);
+    const spot = landingSpot(st, v.kind === 'colony');
+    if (!spot) { logMsg(st, `A ship could find nowhere to land on ${worldName(st, wi)} and was lost.`, '#ff9a7a'); continue; }
+    if (v.kind === 'colony') {
+      const c = makeColony(st, v.species, sisterName(st, root), root.color, spot[0], spot[1], root.isPlayer, 1, () => rnd(st));
+      c.faction = root.id; c.baseName = root.baseName || root.name; c.parent = v.from;
+      c.techs = root.techs; c.rel = {}; c.met = {}; c.ai = Object.assign({}, root.ai);
+      Object.assign(c.chambers, { royal: 3, nursery: 3, galleries: 3, granary: 2, barracks: 1, archive: 1 });
+      c.adults = U(v.units); c.food = 300; c.materials = 400; c.lastFlight = st.turn;
+      c.brood = [{ caste: 'worker', left: 2, n: 30 }];
+      if (root.isPlayer) {
+        for (let y = spot[1] - 6; y <= spot[1] + 6; y++) for (let x = spot[0] - 6; x <= spot[0] + 6; x++) if (inMap(st, x, y)) st.explored[idx(st, x, y)] = 1;
+        popup(st, { title: `Landfall on ${worldName(st, wi)}`, col: WORLD_KINDS[v.dest].icon, text: `${WORLD_KINDS[v.dest].desc}\n\nYour colony ship has touched down and the new queen of ${c.name} is already laying. Use the Worlds button on the map to travel there.\n\nOther creatures live here - their nests will appear as your ants explore.` });
+      }
+      logMsg(st, `Colony ship landed on ${worldName(st, wi)}: ${c.name} is founded.`, root.color);
+    } else {
+      const c = facMembers(st, root.id).find(m => m.world === wi);
+      const sw = createSwarm(st, c || root, v.units, spot[0], spot[1]);
+      if (!c) { sw.owner = root.id; }
+      if (root.isPlayer) {
+        for (let y = spot[1] - 4; y <= spot[1] + 4; y++) for (let x = spot[0] - 4; x <= spot[0] + 4; x++) if (inMap(st, x, y)) st.explored[idx(st, x, y)] = 1;
+        logMsg(st, `Troop ship landed on ${worldName(st, wi)} with ${sumUnits(v.units)} ants.`, '#c8a8ff');
+      }
+    }
+    recompute(st);
+  }
+  setWorld(st, view);
 }
 
 function relationsDrift(st) {
-  const { w, h } = st, touch = {}, F = {};
-  for (const c of st.colonies) F[c.id] = c.faction ?? c.id;
-  for (let y = 0; y < h; y++) for (let x = 0; x < w - 1; x++) {
-    let a = st.owner[y * w + x], b = st.owner[y * w + x + 1];
-    if (a < 0 || b < 0) continue;
-    a = F[a]; b = F[b];
-    if (a !== b) touch[Math.min(a, b) + ':' + Math.max(a, b)] = 1;
-  }
-  const alive = st.colonies.filter(c => c.alive && isRoot(c));
-  const sitesF = c => { const o = []; for (const m of facMembers(st, c.id)) o.push(m.nest, ...m.outposts); return o; };
+  const touch = {}, F = {}, all = st.allCols || st.colonies;
+  for (const c of all) F[c.id] = c.faction ?? c.id;
+  const scan = () => {
+    const { w, h } = st;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w - 1; x++) {
+      let a = st.owner[y * w + x], b = st.owner[y * w + x + 1];
+      if (a < 0 || b < 0) continue;
+      a = F[a]; b = F[b];
+      if (a !== b) touch[Math.min(a, b) + ':' + Math.max(a, b)] = 1;
+    }
+  };
+  if (st.worlds && st.worlds.length > 1) { const v = st.cw; for (let i = 0; i < st.worlds.length; i++) { setWorld(st, i); scan(); } setWorld(st, v); } else scan();
+  const alive = all.filter(c => c.alive && isRoot(c));
+  const sitesF = c => { const o = []; for (const m of facMembers(st, c.id)) { o.push({ x: m.nest.x, y: m.nest.y, w: m.world || 0 }); for (const q of m.outposts) o.push({ x: q.x, y: q.y, w: m.world || 0 }); } return o; };
   const siteDist = (a, b) => {
     let m = 1e9;
     const sa = sitesF(a), sb = sitesF(b);
-    for (const p of sa) for (const q of sb) m = Math.min(m, dist(p.x, p.y, q.x, q.y));
+    for (const p of sa) for (const q of sb) if (p.w === q.w) m = Math.min(m, dist(p.x, p.y, q.x, q.y));
     return m;
   };
   for (const a of alive) {
@@ -1499,9 +1754,17 @@ function checkVictory(st) {
   if (st.gameOver || st.victoryAck) return;
   const mine = playerColonies(st);
   if (!mine.length) return;
-  const rivals = st.colonies.filter(c => c.alive && !isMine(st, c.id));
+  const all = st.allCols || st.colonies;
+  const rivals = all.filter(c => c.alive && !isMine(st, c.id));
+  if (st.mode === 'ascension') {
+    const others = WORLD_KEYS.filter(k => k !== 'earth');
+    const held = others.filter(k => mine.some(c => st.worlds[c.world || 0].kind === k && population(st, c) >= 2000));
+    if (held.length === others.length) { st.gameOver = { win: true, reason: `Thriving colonies on ${others.map(k => WORLD_KINDS[k].name).join(', ')} and Earth. Your ants have become a spacefaring civilisation - a galactic supercolony!` }; return; }
+    if (!rivals.length && st.worlds.length > 1) { st.gameOver = { win: true, reason: 'Every rival colony on every world has fallen. Your queens rule the stars.' }; return; }
+    return;
+  }
   if (!rivals.length) { st.gameOver = { win: true, reason: 'Every rival colony has fallen. Your queens rule the land unchallenged.' }; return; }
-  const share = mine.reduce((a, c) => a + (c._tiles || 0), 0) / st.landTiles;
+  const share = mine.filter(c => (c.world || 0) === st.cw).reduce((a, c) => a + (c._tiles || 0), 0) / st.landTiles;
   if (share >= 0.4) st.gameOver = { win: true, reason: `Your colonies control ${Math.round(share * 100)}% of the land. A true supercolony!` };
 }
 
@@ -1509,18 +1772,56 @@ function checkVictory(st) {
 //  Save / load
 // ---------------------------------------------------------------------
 function serialize(st) {
+  if (st.worlds) saveWorld(st);
   const o = Object.assign({}, st);
-  o.terrain = Array.from(st.terrain); o.explored = Array.from(st.explored);
-  delete o.owner; delete o.visible; delete o._reg; delete o.pendingBattles;
-  o.colonies = st.colonies.map(c => { const x = Object.assign({}, c); delete x._tiles; delete x._food; delete x._mat; return x; });
+  for (const f of WORLD_FIELDS) delete o[f];
+  delete o._reg; delete o.pendingBattles;
+  const strip = c => { const x = Object.assign({}, c); delete x._tiles; delete x._food; delete x._mat; return x; };
+  o.allCols = st.allCols.map(strip);
+  o.worlds = st.worlds.map(W => ({ kind: W.kind, seed: W.seed, w: W.w, h: W.h, worldKind: W.worldKind, mainRegion: W.mainRegion, landTiles: W.landTiles,
+    terrain: Array.from(W.terrain), explored: Array.from(W.explored), swarms: W.swarms, features: W.features, routes: W.routes, colonies: W.colonies.map(c => c.id) }));
   return JSON.stringify(o);
+}
+function regionsOf(st) {
+  const { w, h } = st, n = w * h, T = st.terrain;
+  const reg = new Int32Array(n).fill(-1); let rid = 0;
+  for (let i = 0; i < n; i++) {
+    if (reg[i] >= 0 || !TERRAIN[T[i]].pass) continue;
+    const q = [i]; reg[i] = rid;
+    while (q.length) { const c = q.pop(); const cx = c % w, cy = (c / w) | 0; for (let k = 0; k < 4; k++) { const nx = cx + DIRS8[k][0], ny = cy + DIRS8[k][1]; if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue; const j = ny * w + nx; if (reg[j] < 0 && TERRAIN[T[j]].pass) { reg[j] = rid; q.push(j); } } }
+    rid++;
+  }
+  return reg;
 }
 function deserialize(json) {
   const st = JSON.parse(json);
-  st.terrain = Uint8Array.from(st.terrain); st.explored = Uint8Array.from(st.explored);
-  st.pendingBattles = []; st.popups = st.popups || [];
-  for (const c of st.colonies) { if (c.faction === undefined) c.faction = c.id; if (c.lastFlight === undefined) c.lastFlight = -99; }
-  for (const c of st.colonies) if (!isRoot(c)) { const r = facRoot(st, c.id); if (r) c.techs = r.techs; }
-  recompute(st); updateRouteBlocks(st);
+  st.pendingBattles = []; st.popups = st.popups || []; st.voyages = st.voyages || []; st.mode = st.mode || 'classic';
+  if (!st.worlds) {
+    // older save: a single world
+    st.terrain = Uint8Array.from(st.terrain); st.explored = Uint8Array.from(st.explored);
+    st.allCols = st.colonies; st.worldKind = 'earth';
+    st.worlds = [{ kind: 'earth' }]; st.cw = 0;
+    st._reg = regionsOf(st);
+  } else {
+    st.allCols = st.allCols || [];
+    const byId = new Map(st.allCols.map(c => [c.id, c]));
+    for (const W of st.worlds) {
+      W.terrain = Uint8Array.from(W.terrain); W.explored = Uint8Array.from(W.explored);
+      W.colonies = W.colonies.map(id => byId.get(id)).filter(Boolean);
+      W.owner = null; W.visible = null;
+    }
+    const cw = st.cw || 0; st.cw = -1;
+    st.worlds.forEach((W, i) => { st.cw = i; for (const f of WORLD_FIELDS) st[f] = W[f]; st._reg = regionsOf(st); recompute(st); saveWorld(st); });
+    st.cw = st.worlds.length - 1; setWorld(st, cw);
+  }
+  for (const c of st.allCols) {
+    if (c.faction === undefined) c.faction = c.id; if (c.lastFlight === undefined) c.lastFlight = -99;
+    if (c.world === undefined) c.world = 0;
+    c.adults = U(c.adults); c.mix = U(c.mix);
+    for (const o of c.outposts) o.units = U(o.units);
+  }
+  for (const W of st.worlds) for (const sw of W.swarms || []) sw.units = U(sw.units);
+  for (const c of st.allCols) if (!isRoot(c)) { const r = facRoot(st, c.id); if (r) c.techs = r.techs; }
+  recompute(st); updateRouteBlocks(st); saveWorld(st);
   return st;
 }
